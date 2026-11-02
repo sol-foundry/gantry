@@ -67,7 +67,7 @@ This removes `~/.gantry/bin`, `~/.gantry/dist` and `~/.gantry/runtime`, and the 
 **Install**
 
 ```bash
-brew tap sol-foundry/gantry https://github.com/sol-foundry/gantry && brew trust --formula sol-foundry/gantry/gantry && brew install gantry
+brew tap sol-foundry/tap https://github.com/sol-foundry/gantry && brew trust --formula sol-foundry/tap/gantry && brew install gantry
 ```
 
 One line, three steps: add Gantry's formula (it lives in this repository), trust it, and install Gantry with
@@ -85,7 +85,7 @@ brew update && brew upgrade gantry
 **Uninstall**
 
 ```bash
-brew uninstall gantry && brew untap sol-foundry/gantry
+brew uninstall gantry && brew untap sol-foundry/tap
 brew autoremove          # optional: removes Homebrew's Java if nothing else needs it
 ```
 
