@@ -27,30 +27,40 @@ Under `npm run dev` the dashboard also shows the [Agentation](https://agentation
 elements to annotate them and copy the notes for a coding agent. It is a dev dependency and never ships in the
 built dashboard.
 
+## Branches
+
+- `develop` is the default branch: work lands there, through pull requests or direct pushes.
+- `main` is the stable branch releases are cut from. It's protected: it only changes through a pull request from
+  `develop` (no approval needed) once CI passes, and can't be pushed to, force-pushed or deleted, by admins either.
+
 ## Releasing
 
 Versions are `MAJOR.MINOR.PATCH`, with release candidates as `MAJOR.MINOR.PATCH-rcN`. The tag is the source of
 truth: there's no version bump to commit.
 
-```bash
-git tag v1.2.0-rc1 && git push origin v1.2.0-rc1   # a release candidate
-git tag v1.2.0 && git push origin v1.2.0           # the final release
-```
+1. Open a pull request from `develop` to `main`, wait for CI, and merge it.
+2. Tag `main` and push the tag:
 
-Publishing a release in the GitHub UI (or `gh release create v1.2.0`) works the same way. Either triggers the
-release workflow (`.github/workflows/release.yml`), which:
+   ```bash
+   git switch main && git pull
+   git tag v1.2.0-rc1 && git push origin v1.2.0-rc1   # a release candidate
+   git tag v1.2.0 && git push origin v1.2.0           # the final release
+   ```
+
+   Publishing a release in the GitHub UI (or `gh release create v1.2.0 --target main`) works the same way.
+
+Either triggers the release workflow (`.github/workflows/release.yml`), which:
 
 1. rejects tags that aren't `vMAJOR.MINOR.PATCH` or `vMAJOR.MINOR.PATCH-rcN`;
 2. writes the version into `version.properties`, then builds and tests;
 3. attaches `gantry-<version>.tar.gz` and its `.sha256` to the GitHub release, creating it if needed. A release
    candidate is marked as a pre-release; a final release as the latest;
 4. for a final release only, commits `Formula/gantry.rb` (pointing at the new archive) and `version.properties`
-   (the new version) to `main`, unless `main` already points at a newer version (e.g. a patch to an older line).
+   (the new version) to `develop`, the default branch `brew tap` reads the formula from, unless `develop` already
+   points at a newer version (e.g. a patch to an older line). They reach `main` with the next merge.
 
-So release candidates reach only people who ask for them (`GANTRY_VERSION=1.2.0-rc1` with `install.sh`); `install.sh`'s
-latest and Homebrew get final releases. `version.properties` on `main` shows the latest final release, and local
-builds report that version. Branch protection on `main` must allow `github-actions[bot]` to push, or step 4 fails
-after the release is published.
+So release candidates reach only people who ask for them (`GANTRY_VERSION=1.2.0-rc1` with `install.sh`);
+`install.sh`'s latest and Homebrew get final releases. `install.sh` itself is always downloaded from `main`.
 
 ## Project layout
 

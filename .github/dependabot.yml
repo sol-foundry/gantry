@@ -5,3 +5,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # gradle/actions v6 moved its caching into a proprietary component under Gradle's commercial terms;
+      # stay on v5, which is MIT-licensed.
+      - dependency-name: "gradle/actions*"
+        update-types: ["version-update:semver-major"]
