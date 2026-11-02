@@ -1,19 +1,19 @@
 # Gantry
 
-**The launch gantry for your local stack.** Gantry gives each of your microservices its own local
-infrastructure — database, cache, queue, workflow engine — running in Docker on your laptop, so you can build
-and test against real services before anything launches to staging or production.
+**Give every microservice its own local stack.** Gantry runs real Postgres, MySQL, Valkey, SQS (ElasticMQ), Kafka
+and Temporal for each of your services in Docker on your laptop, so you build and test against the real thing
+before anything launches to staging or production.
 
-Create an **app** per service, add the backing services it needs, start it, and copy the generated env block
-into the app's config. Use the built-in web dashboard to manage apps and browse their data, or drive everything
-from the `gantry` command line. One tool replaces hand-written compose files and per-project setup scripts when
-you run several services side by side.
+Create an **app** per service, pick the services it needs and start it; Gantry hands you the connection settings
+as an env block. Manage everything from the web dashboard or the `gantry` CLI, and let coding agents (Claude Code,
+Cursor, Codex) look up an app's connection details themselves over MCP.
 
-- No cloud account, VPN or shared queues.
-- Every app is an isolated Docker Compose project; host ports are allocated per app so apps never clash.
-- Databases and queues get built-in explorers in the dashboard; the cache comes with RedisInsight and Temporal
-  with its own web UI, both linked from the app page.
-- Postgres and MySQL run [Flyway](https://flywaydb.org) migrations from your service's migration folder.
+- One tool instead of hand-written compose files and per-project setup scripts.
+- Every app is an isolated Docker Compose project with its own ports, so apps never clash.
+- No cloud account, VPN or shared queues: everything runs on your machine.
+- Built-in explorers for databases and queues; RedisInsight, the Temporal UI and Kafka UI come with their services.
+- Postgres and MySQL run [Flyway](https://flywaydb.org) migrations from your service's own folder, and can be
+  synced from a source database such as stage.
 
 ## Install
 

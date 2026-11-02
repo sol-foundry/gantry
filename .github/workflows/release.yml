@@ -3,8 +3,9 @@ name: Release
 # Publishes a version from its tag: vMAJOR.MINOR.PATCH (final) or vMAJOR.MINOR.PATCH-rcN (release candidate).
 # Runs when such a tag is pushed, or when a release is published (GitHub UI or `gh release create`); either way it
 # builds gantry-<version>.tar.gz, attaches it and its checksum to the release, and for final releases points the
-# Homebrew formula and version.properties on main at it. Release candidates are pre-releases: install.sh's "latest"
-# and Homebrew skip them (install one with GANTRY_VERSION=<version>).
+# Homebrew formula and version.properties on the default branch (develop) at it: `brew tap` reads the formula from
+# there, and main is protected. Release candidates are pre-releases: install.sh's "latest" and Homebrew skip them
+# (install one with GANTRY_VERSION=<version>).
 on:
   push:
     tags: ["v*"]
@@ -16,6 +17,8 @@ permissions:
 
 env:
   TAG: ${{ github.event.release.tag_name || github.ref_name }}
+  # Where Homebrew reads the formula: `brew tap` clones the default branch.
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
 # Publishing a release in the UI also creates its tag, which can start a second run: queue them per tag. Every step
 # below is safe to repeat.
@@ -83,16 +86,16 @@ jobs:
             gh release create "$TAG" --title "Gantry $VERSION" --generate-notes --latest $assets
           fi
 
-      - name: Point Homebrew and version.properties on main at the release
+      - name: Point Homebrew and version.properties on the default branch at the release
         if: env.PRERELEASE == 'false'
         run: |
-          git fetch origin main
-          git checkout -f -B main origin/main
+          git fetch origin "$DEFAULT_BRANCH"
+          git checkout -f -B "$DEFAULT_BRANCH" "origin/$DEFAULT_BRANCH"
           current=$(sed -n 's/^version=//p' version.properties)
-          # A patch to an older line (e.g. 1.1.5 after 1.2.0) is released, but main keeps pointing at the newest.
+          # A patch to an older line (e.g. 1.1.5 after 1.2.0) is released, but the default branch keeps pointing at the newest.
           newest=$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -n 1)
           if [ "$newest" != "$VERSION" ]; then
-            echo "main is at $current, newer than $VERSION; leaving the formula and version.properties alone"
+            echo "$DEFAULT_BRANCH is at $current, newer than $VERSION; leaving the formula and version.properties alone"
             exit 0
           fi
           sha=$(cut -d' ' -f1 "build/distributions/gantry-$VERSION.tar.gz.sha256")
@@ -102,10 +105,10 @@ jobs:
             -e "s|^  sha256 .*|  sha256 \"$sha\"|" \
             Formula/gantry.rb
           if git diff --quiet; then
-            echo "main already points at $VERSION"
+            echo "$DEFAULT_BRANCH already points at $VERSION"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "Release $VERSION: point Homebrew and version.properties at it"
-          git push origin main
+          git push origin "$DEFAULT_BRANCH"
