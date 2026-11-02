@@ -1,0 +1,112 @@
+import { useState } from "react";
+import { LayoutGridIcon, PlusIcon, RefreshCwIcon, SearchIcon, Table2Icon } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
+import type { DatabaseInfo, TableSummary } from "@/types";
+import type { TableRef } from "./format";
+
+export type { TableRef } from "./format";
+
+/** The table list, grouped by schema where the database has schemas. */
+export function TablesAside({
+  info,
+  selected,
+  overview,
+  onSelect,
+  onOverview,
+  onNewTable,
+  onRefresh,
+}: {
+  info: DatabaseInfo | undefined;
+  selected: TableRef | undefined;
+  /** The database overview is showing (nothing selected, no new-table form). */
+  overview: boolean;
+  onSelect: (table: TableRef) => void;
+  onOverview: () => void;
+  onNewTable: () => void;
+  onRefresh: () => void;
+}) {
+  const [filter, setFilter] = useState("");
+  const tables = (info?.tables ?? []).filter((t) => t.name.toLowerCase().includes(filter.toLowerCase()));
+  const groups = info?.hasSchemas ? [...new Set(tables.map((t) => t.schema))] : [""];
+
+  return (
+    <Card size="sm">
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium">Tables</span>
+          <Button variant="ghost" size="icon-xs" onClick={onRefresh} aria-label="Refresh tables" title="Refresh">
+            <RefreshCwIcon />
+          </Button>
+        </div>
+        <InputGroup>
+          <InputGroupAddon>
+            <SearchIcon />
+          </InputGroupAddon>
+          <InputGroupInput value={filter} placeholder="Filter tables" onChange={(e) => setFilter(e.target.value)} />
+        </InputGroup>
+        <Button variant="outline" size="sm" onClick={onNewTable}>
+          <PlusIcon />
+          New table
+        </Button>
+        <button
+          className={cn(
+            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted",
+            overview && "bg-muted font-medium",
+          )}
+          onClick={onOverview}
+        >
+          <LayoutGridIcon className="size-3.5 text-muted-foreground" />
+          Overview
+          {info && <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">{info.tables.length}</span>}
+        </button>
+        <div className="-mx-1 flex flex-col gap-3 px-1">
+          {!info && [0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-7 w-full" />)}
+          {info && tables.length === 0 && <p className="px-2 text-xs text-muted-foreground">{filter ? "No match." : "No tables yet."}</p>}
+          {groups.map((schema) => (
+            <div key={schema} className="flex flex-col gap-0.5">
+              {info?.hasSchemas && (
+                <div className="px-2 pb-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">{schema}</div>
+              )}
+              {tables
+                .filter((t) => !info?.hasSchemas || t.schema === schema)
+                .map((t) => (
+                  <TableItem
+                    key={`${t.schema}.${t.name}`}
+                    table={t}
+                    active={selected?.schema === t.schema && selected.name === t.name}
+                    onSelect={onSelect}
+                  />
+                ))}
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function TableItem({ table, active, onSelect }: { table: TableSummary; active: boolean; onSelect: (table: TableRef) => void }) {
+  return (
+    <button
+      className={cn(
+        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted",
+        active && "bg-muted font-medium",
+      )}
+      onClick={() => onSelect({ schema: table.schema, name: table.name })}
+    >
+      <Table2Icon className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate font-mono text-xs">{table.name}</span>
+      {table.kind !== "table" && (
+        <Badge variant="outline" className="h-4 px-1 text-[10px]">
+          {table.kind}
+        </Badge>
+      )}
+      <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">~{table.estimatedRows}</span>
+    </button>
+  );
+}

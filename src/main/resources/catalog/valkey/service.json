@@ -1,0 +1,35 @@
+{
+  "id": "valkey",
+  "description": "Valkey (Redis-compatible cache) with RedisInsight as its UI, connection pre-registered on `up`. Plaintext, no auth, LRU eviction. In-memory unless persist=true.",
+  "options": {
+    "version": "8",
+    "maxmemory": "512mb",
+    "persist": "false"
+  },
+  "option_meta": {
+    "persist": {
+      "type": "boolean",
+      "help": "Keep cache data across restarts (stored in a Docker volume until the app is destroyed)."
+    }
+  },
+  "ports": {
+    "main": 6379,
+    "ui": 5540
+  },
+  "volumes": [
+    "valkey-data",
+    "redisinsight-data"
+  ],
+  "post_up": [
+    "redisinsight-init"
+  ],
+  "env": {
+    "CACHE_HOST": "localhost",
+    "CACHE_PORT": "{{port.main}}",
+    "CACHE_URL": "redis://localhost:{{port.main}}",
+    "REDIS_URL": "redis://localhost:{{port.main}}"
+  },
+  "ui": {
+    "external": "http://localhost:{{port.ui}}"
+  }
+}

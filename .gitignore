@@ -1,0 +1,9 @@
+.gantry/
+node_modules/
+build/
+.gradle/
+.kotlin/
+web/dist/
+.idea/
+playground/
+.playwright-mcp/

@@ -1,0 +1,53 @@
+{
+  "id": "postgres",
+  "description": "PostgreSQL. Put *.sql / *.sh seed files in <app dir>/initdb; they run on first init only. Flyway migrations are read from the migrations directory.",
+  "options": {
+    "version": "16",
+    "name": "{{app_id}}",
+    "user": "{{app_id}}",
+    "password": "{{app_id}}",
+    "migrations": "{{dir}}/migrations/postgres",
+    "migrate_on_up": "false"
+  },
+  "option_meta": {
+    "name": {
+      "help": "Applied only when the data volume is first created; to change it later run SQL (ALTER ROLE/DATABASE) or `gantry destroy` the app."
+    },
+    "user": {
+      "help": "Applied only when the data volume is first created; to change it later run SQL (ALTER ROLE/DATABASE) or `gantry destroy` the app."
+    },
+    "password": {
+      "secret": true,
+      "help": "Applied only when the data volume is first created; to change it later run SQL (ALTER ROLE/DATABASE) or `gantry destroy` the app."
+    },
+    "migrations": {
+      "type": "path",
+      "help": "Directory of Flyway migrations (V1__init.sql, ...). Point it at your service's own migration folder."
+    },
+    "migrate_on_up": {
+      "type": "boolean",
+      "help": "Run pending Flyway migrations after every `up`."
+    }
+  },
+  "ports": {
+    "main": 5432
+  },
+  "volumes": [
+    "postgres-data"
+  ],
+  "dirs": [
+    "initdb",
+    "migrations/postgres"
+  ],
+  "env": {
+    "DB_HOST": "localhost",
+    "DB_PORT": "{{port.main}}",
+    "DB_NAME": "{{opt.name}}",
+    "DB_USER": "{{opt.user}}",
+    "DB_PASSWORD": "{{opt.password}}",
+    "DATABASE_URL": "postgresql://{{opt.user|url}}:{{opt.password|url}}@localhost:{{port.main}}/{{opt.name|url}}"
+  },
+  "ui": {
+    "builtin": "postgres"
+  }
+}

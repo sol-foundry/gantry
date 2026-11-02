@@ -1,0 +1,13 @@
+/* Scrollbars, app-wide: native bars are hidden everywhere, so no element ever reserves a gutter. Scroll containers
+   that should show where you are use <ScrollArea> (components/ui/scroll-area.tsx), which draws an overlay bar that
+   appears while scrolling or when pointed at and fades when idle. Anything still using native overflow (popover
+   menus, textareas) scrolls normally by wheel, trackpad and keyboard, just without a visible bar. */
+@layer base {
+  * {
+    scrollbar-width: none;
+  }
+
+  *::-webkit-scrollbar {
+    display: none;
+  }
+}

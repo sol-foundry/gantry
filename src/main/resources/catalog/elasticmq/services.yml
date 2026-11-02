@@ -1,0 +1,13 @@
+  elasticmq:
+    image: "softwaremill/elasticmq-native:{{opt.version}}"
+    container_name: "{{app}}-elasticmq"
+    ports:
+      - "127.0.0.1:{{port.main}}:9324"
+    volumes:
+      - "{{dir}}/elasticmq.conf:/opt/elasticmq.conf:ro"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9324/?Action=ListQueues"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped

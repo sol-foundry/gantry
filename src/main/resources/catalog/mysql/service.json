@@ -1,0 +1,58 @@
+{
+  "id": "mysql",
+  "description": "MySQL. Put *.sql / *.sh seed files in <app dir>/initdb-mysql; they run on first init only. Flyway migrations are read from the migrations directory.",
+  "options": {
+    "version": "8.4",
+    "name": "{{app_id}}",
+    "user": "{{app_id}}",
+    "password": "{{app_id}}",
+    "root_password": "{{app_id}}",
+    "migrations": "{{dir}}/migrations/mysql",
+    "migrate_on_up": "false"
+  },
+  "option_meta": {
+    "name": {
+      "help": "Applied only when the data volume is first created; to change it later run SQL or `gantry destroy` the app."
+    },
+    "user": {
+      "help": "Applied only when the data volume is first created; to change it later run SQL or `gantry destroy` the app."
+    },
+    "password": {
+      "secret": true,
+      "help": "Applied only when the data volume is first created; to change it later run SQL or `gantry destroy` the app."
+    },
+    "root_password": {
+      "secret": true,
+      "help": "Password of the MySQL root user. Applied only when the data volume is first created."
+    },
+    "migrations": {
+      "type": "path",
+      "help": "Directory of Flyway migrations (V1__init.sql, ...). Point it at your service's own migration folder."
+    },
+    "migrate_on_up": {
+      "type": "boolean",
+      "help": "Run pending Flyway migrations after every `up`."
+    }
+  },
+  "ports": {
+    "main": 3306
+  },
+  "volumes": [
+    "mysql-data"
+  ],
+  "dirs": [
+    "initdb-mysql",
+    "migrations/mysql"
+  ],
+  "env": {
+    "MYSQL_HOST": "localhost",
+    "MYSQL_PORT": "{{port.main}}",
+    "MYSQL_DATABASE": "{{opt.name}}",
+    "MYSQL_USER": "{{opt.user}}",
+    "MYSQL_PASSWORD": "{{opt.password}}",
+    "MYSQL_URL": "mysql://{{opt.user|url}}:{{opt.password|url}}@localhost:{{port.main}}/{{opt.name|url}}"
+  },
+  "ui": {
+    "builtin": "mysql"
+  }
+}

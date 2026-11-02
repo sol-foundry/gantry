@@ -1,0 +1,30 @@
+{
+  "id": "kafka",
+  "description": "Apache Kafka (single KRaft broker, plaintext, no auth) with Kafka UI, pre-connected. Declare topics with --set topics=name[:partitions],... ; other topics are auto-created on first use. Messages do not survive `down`.",
+  "options": {
+    "version": "4.1.0",
+    "topics": "",
+    "partitions": "1"
+  },
+  "option_meta": {
+    "topics": {
+      "help": "Topics created on every `up`: name[:partitions],... Existing topics are left as they are."
+    },
+    "partitions": {
+      "help": "Partitions for declared topics without their own count, and for auto-created topics."
+    }
+  },
+  "ports": {
+    "main": 9092,
+    "ui": 8088
+  },
+  "post_up": [
+    "kafka-init"
+  ],
+  "env": {
+    "KAFKA_BOOTSTRAP_SERVERS": "localhost:{{port.main}}"
+  },
+  "ui": {
+    "external": "http://localhost:{{port.ui}}"
+  }
+}

@@ -1,0 +1,62 @@
+  kafka:
+    image: "apache/kafka:{{opt.version}}"
+    container_name: "{{app}}-kafka"
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # Clients on the host reach the published port, so EXTERNAL advertises it; containers (the UI, the init
+      # job, the healthcheck) use INTERNAL, which advertises the compose service name.
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:19092,EXTERNAL://0.0.0.0:9092,CONTROLLER://localhost:9093
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka:19092,EXTERNAL://localhost:{{port.main}}"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: "{{opt.partitions}}"
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms256m
+    ports:
+      - "127.0.0.1:{{port.main}}:9092"
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:19092"]
+      interval: 5s
+      timeout: 10s
+      start_period: 20s
+      retries: 30
+    restart: unless-stopped
+
+  # Kafka UI is the broker's UI: it runs alongside kafka with the cluster configured through env.
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:v1.3.0
+    container_name: "{{app}}-kafka-ui"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: "{{app}}"
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
+      DYNAMIC_CONFIG_ENABLED: "false"
+      JAVA_OPTS: -Xmx256m
+    ports:
+      - "127.0.0.1:{{port.ui}}:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-shot behind a profile: `up --wait` treats any exited container as a failure, even exit 0.
+  kafka-init:
+    image: "apache/kafka:{{opt.version}}"
+    container_name: "{{app}}-kafka-init"
+    profiles: ["init"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - |
+        echo "[kafka-init] ensuring declared topics"
+{{@kafka_create_topics}}
+    restart: "no"

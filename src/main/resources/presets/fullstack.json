@@ -1,0 +1,9 @@
+{
+  "description": "Postgres, Valkey (with RedisInsight), ElasticMQ and Temporal.",
+  "services": {
+    "postgres": {},
+    "valkey": {},
+    "elasticmq": {},
+    "temporal": {}
+  }
+}

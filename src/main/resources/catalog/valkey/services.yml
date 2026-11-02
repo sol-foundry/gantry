@@ -1,0 +1,61 @@
+  valkey:
+    image: "valkey/valkey:{{opt.version}}-alpine"
+    container_name: "{{app}}-valkey"
+    command:
+      - valkey-server
+      - --maxmemory
+      - "{{opt.maxmemory}}"
+      - --maxmemory-policy
+      - allkeys-lru
+{{@valkey_persistence_args}}
+{{@valkey_data_mount}}
+    ports:
+      - "127.0.0.1:{{port.main}}:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # RedisInsight is the cache's UI: it runs alongside valkey and gets the connection registered on `up`.
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: "{{app}}-redisinsight"
+    volumes:
+      - redisinsight-data:/data
+    ports:
+      - "127.0.0.1:{{port.ui}}:5540"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:5540/api/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 10
+    depends_on:
+      valkey:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-shot behind a profile: `up --wait` treats any exited container as a failure, even exit 0.
+  redisinsight-init:
+    image: curlimages/curl:8.11.1
+    container_name: "{{app}}-redisinsight-init"
+    profiles: ["init"]
+    depends_on:
+      redisinsight:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - |
+        if curl -sf http://redisinsight:5540/api/databases | grep -q '"host":"valkey"'; then
+          echo "[redisinsight-init] connection already registered"
+        else
+          curl -sf -X POST http://redisinsight:5540/api/databases \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"{{app}} (valkey)","host":"valkey","port":6379}' \
+            && echo "[redisinsight-init] registered valkey:6379" \
+            || echo "[redisinsight-init] could not register; add valkey:6379 by hand"
+        fi
+    restart: "no"

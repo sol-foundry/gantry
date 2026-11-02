@@ -1,0 +1,21 @@
+{
+  "id": "elasticmq",
+  "description": "ElasticMQ (SQS-compatible queue). Declare queues with --set queues=name[:visibilitySecs[:dlqName]],... each gets a dead-letter queue (default <name>-dlq). No web UI of its own; the dashboard provides one.",
+  "options": {
+    "version": "1.7.1",
+    "queues": "",
+    "max_receive_count": "3"
+  },
+  "ports": {
+    "main": 9324
+  },
+  "files": {
+    "elasticmq.conf": "elasticmq.conf.tmpl"
+  },
+  "env": {
+    "AWS_ENDPOINT_URL_SQS": "http://localhost:{{port.main}}"
+  },
+  "ui": {
+    "builtin": "queue"
+  }
+}

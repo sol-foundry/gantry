@@ -1,0 +1,23 @@
+  mysql:
+    image: "mysql:{{opt.version}}"
+    container_name: "{{app}}-mysql"
+    # Fresh table statistics (row counts, sizes) for the dashboard instead of MySQL's 24h cache.
+    command: ["--information_schema_stats_expiry=0"]
+    environment:
+      MYSQL_DATABASE: "{{opt.name}}"
+      MYSQL_USER: "{{opt.user}}"
+      MYSQL_PASSWORD: "{{opt.password}}"
+      MYSQL_ROOT_PASSWORD: "{{opt.root_password}}"
+    ports:
+      - "127.0.0.1:{{port.main}}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - "{{dir}}/initdb-mysql:/docker-entrypoint-initdb.d:ro"
+    healthcheck:
+      # TCP ping: the init-time temp server runs with networking off, so this only passes once seeding is done.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      start_period: 60s
+      retries: 120
+    restart: unless-stopped

@@ -1,0 +1,19 @@
+{
+  "id": "temporal",
+  "description": "Temporal dev server. Register search attributes with --set search_attributes=Name=Type,... (Keyword|Int|Text|Bool|Double|Datetime).",
+  "options": {
+    "version": "1.7.2",
+    "search_attributes": ""
+  },
+  "ports": {
+    "grpc": 7233,
+    "ui": 8233
+  },
+  "env": {
+    "TEMPORAL_ADDRESS": "localhost:{{port.grpc}}",
+    "TEMPORAL_NAMESPACE": "default"
+  },
+  "ui": {
+    "external": "http://localhost:{{port.ui}}"
+  }
+}

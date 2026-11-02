@@ -1,0 +1,111 @@
+name: Release
+
+# Publishes a version from its tag: vMAJOR.MINOR.PATCH (final) or vMAJOR.MINOR.PATCH-rcN (release candidate).
+# Runs when such a tag is pushed, or when a release is published (GitHub UI or `gh release create`); either way it
+# builds gantry-<version>.tar.gz, attaches it and its checksum to the release, and for final releases points the
+# Homebrew formula and version.properties on main at it. Release candidates are pre-releases: install.sh's "latest"
+# and Homebrew skip them (install one with GANTRY_VERSION=<version>).
+on:
+  push:
+    tags: ["v*"]
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.release.tag_name || github.ref_name }}
+
+# Publishing a release in the UI also creates its tag, which can start a second run: queue them per tag. Every step
+# below is safe to repeat.
+concurrency:
+  group: release-${{ github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read the version from the tag
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc[1-9][0-9]*)?$'; then
+            echo "::error::tag $TAG isn't vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rcN (e.g. v1.2.0, v1.2.0-rc1)"
+            exit 1
+          fi
+          version="${TAG#v}"
+          case "$version" in *-rc*) prerelease=true ;; *) prerelease=false ;; esac
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "PRERELEASE=$prerelease" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Stamp the version
+        run: |
+          sed -i "s/^version=.*/version=$VERSION/" version.properties
+          built=$(./gradlew -q properties --property version | sed -n 's/^version: //p')
+          [ "$built" = "$VERSION" ] || { echo "::error::build reports version $built, expected $VERSION"; exit 1; }
+
+      - run: ./gradlew build distTar
+
+      - name: Checksum
+        working-directory: build/distributions
+        run: sha256sum "gantry-$VERSION.tar.gz" > "gantry-$VERSION.tar.gz.sha256"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets="build/distributions/gantry-$VERSION.tar.gz build/distributions/gantry-$VERSION.tar.gz.sha256"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Published from the UI (or by an earlier run): attach the build and make the pre-release flag match the tag.
+            gh release upload "$TAG" $assets --clobber
+            if [ "$PRERELEASE" = true ]; then
+              gh release edit "$TAG" --prerelease
+            else
+              gh release edit "$TAG" --prerelease=false --latest
+            fi
+          elif [ "$PRERELEASE" = true ]; then
+            gh release create "$TAG" --title "Gantry $VERSION" --generate-notes --prerelease $assets
+          else
+            gh release create "$TAG" --title "Gantry $VERSION" --generate-notes --latest $assets
+          fi
+
+      - name: Point Homebrew and version.properties on main at the release
+        if: env.PRERELEASE == 'false'
+        run: |
+          git fetch origin main
+          git checkout -f -B main origin/main
+          current=$(sed -n 's/^version=//p' version.properties)
+          # A patch to an older line (e.g. 1.1.5 after 1.2.0) is released, but main keeps pointing at the newest.
+          newest=$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -n 1)
+          if [ "$newest" != "$VERSION" ]; then
+            echo "main is at $current, newer than $VERSION; leaving the formula and version.properties alone"
+            exit 0
+          fi
+          sha=$(cut -d' ' -f1 "build/distributions/gantry-$VERSION.tar.gz.sha256")
+          sed -i "s/^version=.*/version=$VERSION/" version.properties
+          sed -i \
+            -e "s|^  url .*|  url \"https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/gantry-$VERSION.tar.gz\"|" \
+            -e "s|^  sha256 .*|  sha256 \"$sha\"|" \
+            Formula/gantry.rb
+          if git diff --quiet; then
+            echo "main already points at $VERSION"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release $VERSION: point Homebrew and version.properties at it"
+          git push origin main
