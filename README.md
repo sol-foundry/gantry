@@ -72,7 +72,9 @@ brew tap sol-foundry/gantry https://github.com/sol-foundry/gantry && brew trust 
 
 One line, three steps: add Gantry's formula (it lives in this repository), trust it, and install Gantry with
 Homebrew's Java as a dependency. Homebrew only loads formulas from outside its official repositories once you trust
-them; the command trusts the Gantry formula alone, not everything in the tap. Check it with `gantry services`.
+them; the command trusts the Gantry formula alone, not everything in the tap. Because the formula lives in this
+repository rather than a `homebrew-*` one, Homebrew records that trust by the repository's URL. Check the install
+with `gantry services`.
 
 **Update**
 
@@ -83,9 +85,11 @@ brew update && brew upgrade gantry
 **Uninstall**
 
 ```bash
-brew uninstall gantry && brew untrust --formula sol-foundry/gantry/gantry && brew untap sol-foundry/gantry
+brew uninstall gantry && brew untap sol-foundry/gantry
 brew autoremove          # optional: removes Homebrew's Java if nothing else needs it
 ```
+
+`brew uninstall` also removes the trust the install command added.
 
 ### Your apps when uninstalling
 
