@@ -1,12 +1,12 @@
 # Homebrew formula, kept in this repo (the repo doubles as its tap):
-#   brew tap sol-foundry/gantry https://github.com/sol-foundry/gantry
-#   brew install gantry
+#   brew tap sol-foundry/tap https://github.com/sol-foundry/gantry && brew trust --formula sol-foundry/tap/gantry && brew install gantry
+# Homebrew loads formulas from outside its official repositories only once they're trusted.
 # The release workflow (.github/workflows/release.yml) updates url and sha256 for every release.
 class Gantry < Formula
   desc "Per-app local infrastructure (databases, queues, caches) in Docker"
   homepage "https://github.com/sol-foundry/gantry"
   url "https://github.com/sol-foundry/gantry/releases/download/v0.1.0/gantry-0.1.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "3df579582a2da13a55b14dcb77cf7acd88e677791f422e9fe023cb24daf28327"
   license "Apache-2.0"
 
   depends_on "openjdk"

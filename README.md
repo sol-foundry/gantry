@@ -18,38 +18,10 @@ Cursor, Codex) look up an app's connection details themselves over MCP.
 ## Install
 
 Gantry runs your services in Docker, so you need Docker with Compose v2 (Docker Desktop or Colima). Gantry itself
-runs on Java, but you don't need to install Java: both methods below bring their own. Pick one; both work on macOS
-and Linux. (On Windows, [build from source](CONTRIBUTING.md#build-from-source).)
+runs on Java, but you don't need to install Java: both methods below bring their own. Both work on macOS and Linux.
+(On Windows, [build from source](CONTRIBUTING.md#build-from-source).)
 
-### Homebrew
-
-**Install**
-
-```bash
-brew tap sol-foundry/gantry https://github.com/sol-foundry/gantry   # adds Gantry's formula (once)
-brew install gantry                                                 # installs Gantry and Homebrew's Java
-gantry services                                                     # check: lists the services you can add
-```
-
-The formula lives in this repository, so the tap command names it explicitly. Homebrew installs its `openjdk` as a
-dependency and Gantry always runs on it, whatever `JAVA_HOME` you have set.
-
-**Update**
-
-```bash
-brew update
-brew upgrade gantry
-```
-
-**Uninstall**
-
-```bash
-brew uninstall gantry
-brew untap sol-foundry/gantry
-brew autoremove          # optional: removes Homebrew's Java if nothing else needs it
-```
-
-### Script
+### Script (recommended)
 
 **Install**
 
@@ -57,7 +29,8 @@ brew autoremove          # optional: removes Homebrew's Java if nothing else nee
 curl -fsSL https://raw.githubusercontent.com/sol-foundry/gantry/main/install.sh | sh
 ```
 
-Then open a new terminal (or run the `export PATH=...` line the script prints) and check it with `gantry services`.
+That's all: open a new terminal (or run the `export PATH=...` line the script prints) and check it with
+`gantry services`.
 
 The script:
 
@@ -88,6 +61,35 @@ curl -fsSL https://raw.githubusercontent.com/sol-foundry/gantry/main/install.sh 
 ```
 
 This removes `~/.gantry/bin`, `~/.gantry/dist` and `~/.gantry/runtime`, and the `PATH` line it added.
+
+### Homebrew
+
+**Install**
+
+```bash
+brew tap sol-foundry/tap https://github.com/sol-foundry/gantry && brew trust --formula sol-foundry/tap/gantry && brew install gantry
+```
+
+One line, three steps: add Gantry's formula (it lives in this repository), trust it, and install Gantry with
+Homebrew's Java as a dependency. Homebrew only loads formulas from outside its official repositories once you trust
+them; the command trusts the Gantry formula alone, not everything in the tap. Because the formula lives in this
+repository rather than a `homebrew-*` one, Homebrew records that trust by the repository's URL. Check the install
+with `gantry services`.
+
+**Update**
+
+```bash
+brew update && brew upgrade gantry
+```
+
+**Uninstall**
+
+```bash
+brew uninstall gantry && brew untap sol-foundry/tap
+brew autoremove          # optional: removes Homebrew's Java if nothing else needs it
+```
+
+`brew uninstall` also removes the trust the install command added.
 
 ### Your apps when uninstalling
 

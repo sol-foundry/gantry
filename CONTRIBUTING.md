@@ -62,6 +62,26 @@ Either triggers the release workflow (`.github/workflows/release.yml`), which:
 So release candidates reach only people who ask for them (`GANTRY_VERSION=1.2.0-rc1` with `install.sh`);
 `install.sh`'s latest and Homebrew get final releases. `install.sh` itself is always downloaded from `main`.
 
+## Homebrew core
+
+`Formula/gantry.rb` installs the prebuilt release from this repository, which Homebrew treats as a third-party tap:
+users have to trust it. Once Gantry is in `homebrew/core`, `brew install gantry` works with no tap and no trust.
+`packaging/homebrew-core/gantry.rb` is the formula for that: it builds from the tagged source with Homebrew's
+`gradle`, `node` and `openjdk@17`, and passes `brew audit --new --strict --online`.
+
+Homebrew only accepts projects that are notable enough (roughly 75+ stars, or 30+ forks or watchers) and have a
+stable release. To submit:
+
+1. Update `url` and `sha256` in `packaging/homebrew-core/gantry.rb` to the latest release's source archive
+   (`https://github.com/sol-foundry/gantry/archive/refs/tags/v<version>.tar.gz`).
+2. Fork [Homebrew/homebrew-core](https://github.com/Homebrew/homebrew-core), copy the file to `Formula/g/gantry.rb`
+   and, in that checkout, run `brew install --build-from-source gantry`, `brew test gantry` and
+   `brew audit --new --strict --online gantry`.
+3. Open a pull request titled `gantry 0.1.0 (new formula)`.
+
+Once it's merged, `brew bump-formula-pr` updates it for later releases, and the README's Homebrew section can drop
+the tap and trust steps.
+
 ## Project layout
 
 ```
