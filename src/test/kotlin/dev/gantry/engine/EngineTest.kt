@@ -139,6 +139,27 @@ class EngineTest {
     }
 
     @Test
+    fun `a removed service gets its ports back when added again`() {
+        engine.create("shop", services = listOf("postgres", "elasticmq"))
+        val before = env("shop")["AWS_ENDPOINT_URL_SQS"]
+        engine.create("other", services = listOf("elasticmq"))
+
+        engine.remove("shop", "elasticmq")
+        engine.create("third", services = listOf("elasticmq"))
+        engine.add("shop", "elasticmq")
+
+        assertEquals(before, env("shop")["AWS_ENDPOINT_URL_SQS"], "settings written for the old port keep working")
+        assertNotEquals(before, env("third")["AWS_ENDPOINT_URL_SQS"], "a reserved port isn't handed to another app")
+    }
+
+    @Test
+    fun `the cache is also given as host and port in one value`() {
+        engine.create("shop", services = listOf("valkey"))
+
+        assertEquals("localhost:${env("shop")["CACHE_PORT"]}", env("shop")["CACHE_ENDPOINT"])
+    }
+
+    @Test
     fun `ports stay stable when services are added`() {
         engine.create("shop", services = listOf("postgres"))
         val before = env("shop")["DB_PORT"]

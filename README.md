@@ -178,6 +178,8 @@ can run SQL and manage containers.
   one; `gantry env` shows them. Apps whose database was added before this keep the old default (the app name).
 - Postgres and MySQL `name`, `user` and `password` are applied only when the data volume is first created.
   Changing them later makes connections fail; revert the option, change the role with SQL, or `gantry destroy`.
+- `gantry remove` keeps the service's host ports reserved for the app (freed by `gantry destroy`), so adding it back
+  gives it the same ports and settings written for them keep working.
 - `gantry remove` keeps a database's data volume. Adding that database back asks what to do with it:
   `--fresh-data` deletes it so the database starts empty with its new credentials, `--keep-data` reuses it (set
   `user` and `password` to the old ones). The dashboard's **Add service** shows the same choice.
@@ -227,7 +229,7 @@ Only services the app has contribute keys:
 |---|---|
 | postgres | `DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD DATABASE_URL` |
 | mysql | `MYSQL_HOST MYSQL_PORT MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD MYSQL_URL` |
-| valkey | `CACHE_HOST CACHE_PORT CACHE_URL REDIS_URL` |
+| valkey | `CACHE_HOST CACHE_PORT CACHE_ENDPOINT CACHE_URL REDIS_URL` (`CACHE_ENDPOINT` is `host:port`) |
 | elasticmq | `AWS_ENDPOINT_URL_SQS` |
 | temporal | `TEMPORAL_ADDRESS TEMPORAL_NAMESPACE` |
 | kafka | `KAFKA_BOOTSTRAP_SERVERS` |
