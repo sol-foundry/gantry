@@ -25,7 +25,9 @@ class Exporter(
                     }
                 state.id to ExportedService(options = kept + pinned, migrations = migrations, source = state.source)
             }
-        return ExportFile(app = app, services = services, envNames = loaded.envNames)
+        // Renames of variables no service provides any more (left by a removed service) would make the import fail.
+        val provided = engine.envEntries(loaded).map { it.key }.toSet()
+        return ExportFile(app = app, services = services, envNames = loaded.envNames.filterKeys { it in provided })
     }
 
     /** Null for the default directory (the importer makes its own); repo-relative when inside a git repo. */

@@ -41,6 +41,17 @@ class ExporterTest {
     }
 
     @Test
+    fun `renames left by a removed service are not exported`() {
+        engine.create("shop", services = listOf("postgres", "elasticmq"))
+        engine.setEnvNames("shop", mapOf("DB_USER" to "DB_USERNAME", "AWS_ENDPOINT_URL_SQS" to "SQS_ENDPOINT_OVERRIDE"))
+        engine.remove("shop", "elasticmq")
+
+        // Kept with the app (adding the queue back restores it), but an importer would reject it.
+        assertEquals("SQS_ENDPOINT_OVERRIDE", engine.loadApp("shop").envNames["AWS_ENDPOINT_URL_SQS"])
+        assertEquals(mapOf("DB_USER" to "DB_USERNAME"), Exporter(engine).export("shop").envNames)
+    }
+
+    @Test
     fun `a custom migrations dir is exported, the default is not`() {
         val repo = Files.createTempDirectory("svc")
         Files.createDirectories(repo.resolve(".git"))

@@ -141,7 +141,8 @@ class Engine(
         if (app.service(id) == null) throw GantryException("'$id' is not in '$appName'")
         val dependents = app.services.filter { id in catalog.resolve(it.id).requires }.map { it.id }
         if (dependents.isNotEmpty()) throw GantryException("'$id' is required by ${dependents.joinToString()}; remove that first")
-        updatePorts { ports -> ports.keys.removeIf { it.startsWith("$appName/$id/") } }
+        // The service's ports stay reserved for this app (freed by destroy), so adding it back reuses them and
+        // settings written for them keep working.
         val removed = render(app.copy(services = app.services.filter { it.id != id }))
         secrets.forget(appName, id)
         return removed

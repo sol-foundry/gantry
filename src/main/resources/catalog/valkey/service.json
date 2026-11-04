@@ -26,6 +26,7 @@
   "env": {
     "CACHE_HOST": "localhost",
     "CACHE_PORT": "{{port.main}}",
+    "CACHE_ENDPOINT": "localhost:{{port.main}}",
     "CACHE_URL": "redis://localhost:{{port.main}}",
     "REDIS_URL": "redis://localhost:{{port.main}}"
   },

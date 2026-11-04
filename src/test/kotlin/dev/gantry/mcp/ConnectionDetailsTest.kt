@@ -34,7 +34,16 @@ class ConnectionDetailsTest {
     @Test
     fun `host and ports are given even when every variable is omitted`() {
         engine.create("shop", services = listOf("valkey"))
-        engine.setEnvNames("shop", mapOf("CACHE_HOST" to "", "CACHE_PORT" to "", "CACHE_URL" to "", "REDIS_URL" to ""))
+        engine.setEnvNames(
+            "shop",
+            mapOf(
+                "CACHE_HOST" to "",
+                "CACHE_PORT" to "",
+                "CACHE_ENDPOINT" to "",
+                "CACHE_URL" to "",
+                "REDIS_URL" to "",
+            ),
+        )
         val ports = engine.readApp("shop").service("valkey")!!.ports
 
         val cache = connectionDetails(engine, "shop").services.single()
