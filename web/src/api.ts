@@ -109,7 +109,8 @@ function dbApi(base: string) {
     savedPassword: () => get<{ password: string | null }>(`${base}/source/password`),
     saveSource: (source: SourceSettings, password?: string) =>
       request<SourceInfo>("PUT", `${base}/source`, { ...source, password: password || undefined }),
-    startSync: (source: SourceSettings, password?: string) => post<SyncJob>(`${base}/sync`, { source, password: password || undefined }),
+    startSync: (source: SourceSettings, password?: string, tables?: string[]) =>
+      post<SyncJob>(`${base}/sync`, { source, password: password || undefined, tables }),
     syncJob: () => get<SyncJob>(`${base}/sync`),
     script: (scriptName: string) => get<{ name: string; sql: string }>(`${base}/migrations/script?${qs({ name: scriptName })}`),
   };

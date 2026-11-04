@@ -301,6 +301,8 @@ export interface SyncJob {
   flywayVersion?: string | null;
   /** The local database is half-copied, by this sync or an earlier one. */
   incomplete?: boolean;
+  /** The tables this sync copies; empty for a whole-database sync. */
+  scope?: string[];
 }
 
 export interface SourceInfo {

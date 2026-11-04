@@ -82,13 +82,16 @@ export function SyncProgress({
         <Alert>
           <CheckCircle2Icon />
           <AlertTitle>Sync finished{duration ? ` in ${duration}` : ""}</AlertTitle>
-          <AlertDescription>
-            {[
-              typeof job.tables === "number" ? `${job.tables} ${job.tables === 1 ? "table" : "tables"}` : undefined,
-              job.flywayVersion ? `Flyway version ${job.flywayVersion}` : undefined,
-            ]
-              .filter(Boolean)
-              .join(" · ") || "The local database is a copy of the source."}
+          <AlertDescription className="wrap-anywhere">
+            {job.scope?.length
+              ? // A table sync replaced only these tables; its message names them with their row counts.
+                (job.message ?? `Copied ${job.scope.join(", ")}.`)
+              : [
+                  typeof job.tables === "number" ? `${job.tables} ${job.tables === 1 ? "table" : "tables"}` : undefined,
+                  job.flywayVersion ? `Flyway version ${job.flywayVersion}` : undefined,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || "The local database is a copy of the source."}
           </AlertDescription>
         </Alert>
       ) : (

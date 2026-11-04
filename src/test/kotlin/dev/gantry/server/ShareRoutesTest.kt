@@ -152,6 +152,55 @@ class ShareRoutesTest {
     }
 
     @Test
+    fun `a table sync names its tables`() {
+        gantry.create("shop", services = listOf("postgres"))
+        // Answers only what the source check asks: the server's version.
+        val meta =
+            java.lang.reflect.Proxy.newProxyInstance(
+                javaClass.classLoader,
+                arrayOf(java.sql.DatabaseMetaData::class.java),
+            ) { _, method, _ ->
+                when (method.name) {
+                    "getDatabaseMajorVersion" -> 16
+                    "getDatabaseMinorVersion" -> 4
+                    else -> "16.4"
+                }
+            }
+        val connection =
+            java.lang.reflect.Proxy.newProxyInstance(javaClass.classLoader, arrayOf(java.sql.Connection::class.java)) { _, method, _ ->
+                if (method.name == "getMetaData") meta else null
+            } as java.sql.Connection
+        dashboard(Sync(gantry, connect = { _, _, _ -> connection }, containers = noContainers)) {
+            val response =
+                postJson(
+                    "/api/apps/shop/db/postgres/sync",
+                    """{"source":{"host":"stage.example","port":5432,"database":"shop","user":"app"},"password":"pw","tables":["users","config.flags"]}""",
+                )
+
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            assertContains(response.bodyAsText(), "\"scope\":[\"public.users\",\"config.flags\"]")
+        }
+    }
+
+    @Test
+    fun `an unsafe table name is refused before the source is contacted`() {
+        gantry.create("shop", services = listOf("postgres"))
+        var contacted = false
+        val sync = Sync(gantry, connect = { _, _, _ -> throw SQLException("unused").also { contacted = true } }, containers = noContainers)
+        dashboard(sync) {
+            val response =
+                postJson(
+                    "/api/apps/shop/db/postgres/sync",
+                    """{"source":{"host":"stage.example","port":5432,"database":"shop","user":"app"},"password":"pw","tables":["x;drop"]}""",
+                )
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertContains(response.bodyAsText(), "\"field\":\"tables\"")
+            assertEquals(false, contacted)
+        }
+    }
+
+    @Test
     fun `sync unreachable is 502`() {
         gantry.create("shop", services = listOf("postgres"))
         val sync = Sync(gantry, connect = { _, _, _ -> throw SQLException("Connection refused", "08001") }, containers = noContainers)

@@ -48,6 +48,8 @@ data class SyncJob(
     val flywayVersion: String? = null,
     /** The local database is half-copied: by this sync, or by an earlier one that a later attempt did not replace. */
     val incomplete: Boolean = false,
+    /** The tables this sync copies; empty for a whole-database sync. */
+    val scope: List<String> = emptyList(),
 )
 
 /** The Docker side of a sync, behind an interface so tests never reach the daemon. */
@@ -156,9 +158,10 @@ class Sync(
         service: String,
         source: SourceSettings,
         password: String,
+        tables: List<String> = emptyList(),
         onLine: (String) -> Unit = {},
     ): SyncJob {
-        val run = begin(app, service, source, password, onLine)
+        val run = begin(app, service, source, password, tables, onLine)
         val initial = run.job
         thread(name = "gantry-sync-${run.key}", isDaemon = true) { execute(run, source, password) }
         return initial
@@ -170,8 +173,9 @@ class Sync(
         service: String,
         source: SourceSettings,
         password: String,
+        tables: List<String> = emptyList(),
         onLine: (String) -> Unit,
-    ): SyncJob = execute(begin(app, service, source, password, onLine), source, password)
+    ): SyncJob = execute(begin(app, service, source, password, tables, onLine), source, password)
 
     /**
      * The running or most recent sync of that database since this process started; without one, a sync that a
@@ -253,11 +257,14 @@ class Sync(
         service: String,
         source: SourceSettings,
         password: String,
+        tables: List<String>,
         onLine: (String) -> Unit,
     ): Run {
         val id = serviceId(app, service)
         if (!source.complete()) throw GantryException("source of $id is incomplete: host, port, database and user are required")
         checkDatabaseName(Dialect.forService(id), source.database)
+        // Checked before claiming, so a bad name never blocks the database.
+        val scope = if (tables.isEmpty()) emptyList() else parseTables(Dialect.forService(id), tables).map { it.toString() }
         val key = "$app/$id"
         val lock = synchronized(claims) { claim(app, id, key) }
         val job =
@@ -270,6 +277,7 @@ class Sync(
                 log = emptyList(),
                 message = null,
                 startedAt = Instant.now().toString(),
+                scope = scope,
             )
         jobs[key] = job
         return Run(key, job, lock, password, onLine)
@@ -325,6 +333,10 @@ class Sync(
                     Dialect.MySql -> mapOf("LOCAL_PW" to options.getValue("root_password"), "SRC_PW" to password)
                 }
 
+            if (run.job.scope.isNotEmpty()) {
+                return copyTables(run, source, password, target, parseTables(dialect, run.job.scope), image, env, started)
+            }
+
             // Built before clearing: it rejects unsafe database names while local data is still intact.
             val container = "gantry-sync-$app-$id"
             val args = listOf("--name=$container") + copyScript(dialect, source, target, "gantry-${app}_default", image)
@@ -369,6 +381,62 @@ class Sync(
         } finally {
             run.release()
         }
+    }
+
+    /**
+     * Copies only [tables]. Each table is replaced in its own transaction, so a failure leaves that table's local
+     * rows as they were: unlike a whole-database sync, there is never a half-copied state to report.
+     */
+    private fun copyTables(
+        run: Run,
+        source: SourceSettings,
+        password: String,
+        target: DatabaseTarget,
+        tables: List<TableRef>,
+        image: String,
+        env: Map<String, String>,
+        started: Long,
+    ): SyncJob {
+        val app = run.job.app
+        val id = run.job.service
+        val container = "gantry-sync-$app-$id"
+        val args = listOf("--name=$container") + tableCopyScript(target.dialect, source, target, tables, "gantry-${app}_default", image)
+        containers.remove(container)
+        run.phase("copying tables")
+        val copied = linkedMapOf<String, String>()
+        val exit =
+            containers.run(args, env) { line ->
+                if (line.startsWith(TABLE_DONE)) {
+                    val (table, rows) = line.removePrefix(TABLE_DONE).trim().split(" ", limit = 2) + listOf("?")
+                    copied[table] = rows
+                    run.log("copied $table ($rows rows)")
+                } else {
+                    run.log(line)
+                }
+            }
+        if (exit != 0) {
+            val failed = tables.map { it.toString() }.firstOrNull { it !in copied } ?: "a table"
+            val done = if (copied.isEmpty()) "" else " Already copied: ${copied.keys.joinToString()}."
+            return run.fail(
+                "Copying $failed failed; its local rows were left unchanged.$done" +
+                    run.job.log
+                        .takeLast(FAILURE_LOG_LINES)
+                        .joinToString("") { "\n$it" },
+            )
+        }
+        val saveFailure =
+            runCatching {
+                engine.setSource(app, id, source)
+                engine.secrets.setPassword(app, id, password)
+            }.exceptionOrNull()
+        val took = Duration.ofNanos(System.nanoTime() - started).toSeconds()
+        val summary =
+            buildString {
+                append("Copied ${copied.entries.joinToString { (table, rows) -> "$table ($rows rows)" }}")
+                append(" from ${describe(source)} into ${target.database} in ${took}s")
+                saveFailure?.let { append(". Copied, but saving the source settings failed: ${it.message ?: it}") }
+            }
+        return run.succeed(summary, null, null)
     }
 
     private fun incomplete(
@@ -463,6 +531,143 @@ const val INTERRUPTED_PHASE = "interrupted"
 
 /** Printed by the copy script once the local database is empty and the copy begins. */
 internal const val COPYING_MARKER = "gantry-phase: copying"
+
+/** Printed by the table copy script after each table, with its row count. */
+internal const val TABLE_DONE = "gantry-table-done: "
+
+/** A table to sync. [schema] is null for MySQL, where the database is the schema. */
+data class TableRef(
+    val schema: String?,
+    val name: String,
+) {
+    override fun toString() = if (schema == null) name else "$schema.$name"
+}
+
+private val identifierRule = Regex("^[A-Za-z_][A-Za-z0-9_$]*$")
+
+/**
+ * Parses table names given by the user: `table` or, for Postgres, `schema.table` (default `public`). Names are kept
+ * to plain identifiers, since they end up in SQL, a shell script and pg_dump's table pattern.
+ */
+internal fun parseTables(
+    dialect: Dialect,
+    names: List<String>,
+): List<TableRef> {
+    if (names.isEmpty()) throw GantryException("name at least one table")
+    return names
+        .map { raw ->
+            val parts = raw.trim().split('.')
+            val ref =
+                when {
+                    parts.size == 1 -> TableRef(if (dialect == Dialect.Postgres) "public" else null, parts[0])
+                    parts.size == 2 && dialect == Dialect.Postgres -> TableRef(parts[0], parts[1])
+                    dialect == Dialect.MySql -> throw GantryException(
+                        "table '$raw': give just the table name (the database is the source's)",
+                    )
+                    else -> throw GantryException("table '$raw': use table or schema.table")
+                }
+            if (listOfNotNull(ref.schema, ref.name).any { !identifierRule.matches(it) }) {
+                throw GantryException("table '$raw' isn't a plain name (letters, digits, '_' and '$')")
+            }
+            ref
+        }.distinct()
+}
+
+/**
+ * Arguments after `docker run --rm` that replace the rows of [tables] in the local database with the source's. Each
+ * table is dumped to a file first and then loaded in one transaction (with foreign-key checks off for it), so a
+ * failed dump or load leaves its local rows untouched. A table missing locally is created from the source's
+ * definition. Passwords are only referenced as environment variables, as in [copyScript].
+ */
+internal fun tableCopyScript(
+    dialect: Dialect,
+    source: SourceSettings,
+    target: DatabaseTarget,
+    tables: List<TableRef>,
+    network: String,
+    image: String = clientImage(dialect, null, null),
+): List<String> {
+    checkSourceHost(source.host)
+    checkDatabaseName(dialect, source.database)
+    checkDatabaseName(dialect, target.database)
+    val srcHost = shq(containerHost(source.host))
+    val db = shq(target.database)
+    val script =
+        when (dialect) {
+            Dialect.Postgres -> {
+                val local = "-h postgres -p 5432 -U ${shq(target.user)} -d $db"
+                listOf(
+                    "set -eu",
+                    "set -o pipefail",
+                    "umask 077",
+                    "printf '*:*:*:*:%s\\n' \"\$(printf '%s' \"\$SRC_PW\" | sed 's/[\\\\:]/\\\\&/g')\" > /tmp/source.pgpass",
+                ) +
+                    tables.flatMap { table ->
+                        val quoted = Dialect.Postgres.qualified(table.schema!!, table.name)
+                        val dump =
+                            "env -u PGPASSWORD PGPASSFILE=/tmp/source.pgpass pg_dump -h $srcHost -p ${source.port} " +
+                                "-U ${shq(
+                                    source.user,
+                                )} -d ${shq(source.database)} --strict-names --no-owner --no-privileges -t ${shq(quoted)}"
+                        listOf(
+                            "echo ${shq("Copying $table")}",
+                            "if [ \"\$(psql $local -tAc ${shq("SELECT to_regclass('$quoted') IS NOT NULL")})\" = t ]; then",
+                            "  { echo ${shq("SET session_replication_role = replica;")}; echo ${shq("DELETE FROM $quoted;")}; " +
+                                "$dump --data-only; } > /tmp/table.sql",
+                            "else",
+                            "  $dump > /tmp/table.sql",
+                            "  echo ${shq("$table doesn't exist locally; creating it from the source")}",
+                            "fi",
+                            // Errors still reach the log on stderr; the statements' own results are just noise.
+                            "psql $local -v ON_ERROR_STOP=1 --single-transaction -q -f /tmp/table.sql > /dev/null",
+                            "echo \"$TABLE_DONE$table \$(psql $local -tAc ${shq("SELECT count(*) FROM $quoted")})\"",
+                        )
+                    }
+            }
+
+            Dialect.MySql -> {
+                val local = "--defaults-extra-file=/tmp/local.cnf -h mysql -P 3306 -u root"
+                val sqlString = { value: String -> "'" + value.replace("\\", "\\\\").replace("'", "''") + "'" }
+                listOf(
+                    "set -euo pipefail",
+                    "umask 077",
+                    "cnf() { printf '[client]\\npassword=\"%s\"\\n' \"\$(printf '%s' \"\$1\" | sed 's/[\\\\\"]/\\\\&/g')\"; }",
+                    "cnf \"\$LOCAL_PW\" > /tmp/local.cnf",
+                    "cnf \"\$SRC_PW\" > /tmp/source.cnf",
+                ) +
+                    tables.flatMap { table ->
+                        val quoted = Dialect.MySql.quote(table.name)
+                        val dump =
+                            "mysqldump --defaults-extra-file=/tmp/source.cnf -h $srcHost -P ${source.port} -u ${shq(source.user)} " +
+                                "--single-transaction --set-gtid-purged=OFF --no-tablespaces --skip-lock-tables --skip-add-locks " +
+                                "--skip-disable-keys ${shq(source.database)} ${shq(table.name)}"
+                        val exists =
+                            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = ${sqlString(target.database)} " +
+                                "AND table_name = ${sqlString(table.name)}"
+                        // Definers name source accounts that do not exist locally; without them, objects belong to root.
+                        val noDefiners = "sed -E 's/DEFINER=`[^`]+`@`[^`]+`//g'"
+                        listOf(
+                            "echo ${shq("Copying $table")}",
+                            "if [ \"\$(mysql $local -N -e ${shq(exists)})\" = 1 ]; then",
+                            "  { echo ${shq("SET FOREIGN_KEY_CHECKS=0; START TRANSACTION; DELETE FROM $quoted;")}; " +
+                                "$dump --no-create-info --skip-triggers | $noDefiners; echo ${shq("COMMIT;")}; } > /tmp/table.sql",
+                            "else",
+                            "  $dump --triggers | $noDefiners > /tmp/table.sql",
+                            "  echo ${shq("$table doesn't exist locally; creating it from the source")}",
+                            "fi",
+                            "mysql $local --default-character-set=utf8mb4 $db < /tmp/table.sql",
+                            "echo \"$TABLE_DONE$table \$(mysql $local -N -e ${shq(
+                                "SELECT COUNT(*) FROM ${Dialect.MySql.quote(target.database)}.$quoted",
+                            )})\"",
+                        )
+                    }
+            }
+        }.joinToString("\n")
+    val env = if (dialect == Dialect.Postgres) listOf("PGPASSWORD", "SRC_PW") else listOf("LOCAL_PW", "SRC_PW")
+    return listOf("--network=$network", "--add-host=host.docker.internal:host-gateway") +
+        env.flatMap { listOf("-e", it) } +
+        listOf(image, "sh", "-c", script)
+}
 
 /** Hosts that mean "this machine" are reached from a container through Docker's host gateway. */
 internal fun containerHost(host: String): String =

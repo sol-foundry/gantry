@@ -15,6 +15,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 /** A failed request, shown in place; dismissible when the error belongs to a user action. */
@@ -150,5 +151,37 @@ export function ConfirmButton({
         </AlertDialogContent>
       </AlertDialog>
     </>
+  );
+}
+
+/**
+ * An icon-only button whose label shows as a tooltip (and is its accessible name). The tooltip hangs off a wrapper
+ * so it still shows while the button is disabled, which is when [tooltip] explains why.
+ */
+export function IconButton({
+  label,
+  tooltip,
+  onClick,
+  disabled,
+  variant = "outline",
+  children,
+}: {
+  label: string;
+  /** Shown instead of [label], e.g. why the button is disabled. */
+  tooltip?: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  variant?: React.ComponentProps<typeof Button>["variant"];
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<span className="inline-flex" />}>
+        <Button variant={variant} size="icon-sm" aria-label={label} disabled={disabled} onClick={onClick}>
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{tooltip ?? label}</TooltipContent>
+    </Tooltip>
   );
 }

@@ -212,6 +212,89 @@ class SyncTest {
     }
 
     @Test
+    fun `table names are checked and default to the public schema`() {
+        assertEquals(
+            listOf(TableRef("public", "users"), TableRef("config", "flags")),
+            parseTables(Dialect.Postgres, listOf("users", "config.flags")),
+        )
+        assertEquals(listOf(TableRef(null, "orders")), parseTables(Dialect.MySql, listOf("orders")))
+        listOf("users;drop", "a.b.c", "", "bad name", "-t").forEach { bad ->
+            assertFailsWith<GantryException>("rejects '$bad'") { parseTables(Dialect.Postgres, listOf(bad)) }
+        }
+        assertFailsWith<GantryException> { parseTables(Dialect.MySql, listOf("shop.orders")) }
+        assertFailsWith<GantryException> { parseTables(Dialect.Postgres, emptyList()) }
+    }
+
+    @Test
+    fun `postgres table copy replaces only those rows, in one transaction, without fk checks`() {
+        val script =
+            tableCopyScript(
+                Dialect.Postgres,
+                stage,
+                target("postgres", "shop", "app"),
+                listOf(TableRef("public", "users")),
+                "net",
+            ).last()
+
+        assertContains(script, "--data-only")
+        assertContains(script, "--strict-names")
+        assertContains(script, "-t '\"public\".\"users\"'")
+        assertContains(script, "SET session_replication_role = replica;")
+        assertContains(script, "DELETE FROM \"public\".\"users\";")
+        assertContains(script, "--single-transaction")
+        assertContains(script, "ON_ERROR_STOP=1")
+        assertContains(script, "> /tmp/table.sql")
+        assertFalse("dropdb" in script || "createdb" in script || "TRUNCATE" in script)
+    }
+
+    @Test
+    fun `mysql table copy replaces only those rows, in one transaction, without fk checks`() {
+        val script = tableCopyScript(Dialect.MySql, stage, target("mysql", "shop", "app"), listOf(TableRef(null, "orders")), "net").last()
+
+        assertContains(script, "--no-create-info")
+        assertContains(script, "SET FOREIGN_KEY_CHECKS=0;")
+        assertContains(script, "START TRANSACTION;")
+        assertContains(script, "DELETE FROM `orders`;")
+        assertContains(script, "COMMIT;")
+        assertContains(script, "--skip-lock-tables")
+        assertContains(script, "> /tmp/table.sql")
+        assertFalse("DROP DATABASE" in script)
+    }
+
+    @Test
+    fun `a table sync reports its tables and never marks the database incomplete`() {
+        engine.create("shop", services = listOf("postgres"))
+        val containers =
+            FakeContainers { _, _, onLine ->
+                onLine("gantry-table-done: public.users 908")
+                0
+            }
+        val sync = Sync(engine, connect = { _, _, _ -> fakeConnection(16, 4) }, containers = containers)
+
+        val job = sync.runBlocking("shop", "postgres", stage, "pw", tables = listOf("users")) {}
+
+        assertEquals("succeeded", job.state, job.message)
+        assertEquals(listOf("public.users"), job.scope)
+        assertContains(job.message!!, "public.users (908 rows)")
+        assertFalse(job.incomplete)
+        assertFalse(Files.exists(engine.appDir("shop").resolve(".sync-postgres.incomplete")))
+        assertContains(containers.args.last(), "DELETE FROM \"public\".\"users\"")
+    }
+
+    @Test
+    fun `a failed table sync says local data was left unchanged`() {
+        engine.create("shop", services = listOf("postgres"))
+        val sync = Sync(engine, connect = { _, _, _ -> fakeConnection(16, 4) }, containers = FakeContainers { _, _, _ -> 1 })
+
+        val job = sync.runBlocking("shop", "postgres", stage, "pw", tables = listOf("users")) {}
+
+        assertEquals("failed", job.state)
+        assertContains(job.message!!, "unchanged")
+        assertFalse(job.incomplete)
+        assertFalse(Files.exists(engine.appDir("shop").resolve(".sync-postgres.incomplete")))
+    }
+
+    @Test
     fun `phases run in order`() {
         engine.create("shop", services = listOf("postgres"))
         val phases = mutableListOf<String>()

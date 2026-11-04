@@ -287,7 +287,18 @@ Replace a local Postgres or MySQL database with a full copy of a source database
 gantry sync my-app                                                 # asks for host, port, database, user and password the first time
 gantry sync inventory --service mysql -y
 gantry sync my-app --source host=stage2.internal --source user=me  # change the saved source
+gantry sync my-app --table users --table config.flags              # copy only these tables
 ```
+
+**Single tables.** `--table` (repeatable; `table`, or `schema.table` on Postgres) copies only those tables and leaves
+every other table alone. In the dashboard, each table's page has its own **Sync from source** button.
+
+- Each table is replaced in one transaction: if the copy fails (say a column differs between source and local), that
+  table's local rows stay as they were, so there's never a half-copied state.
+- Foreign-key checks are off while a table loads, so tables that reference it keep their rows, even ones pointing at
+  rows the source doesn't have.
+- The local table keeps its structure (from your migrations); only its rows are replaced. A table that doesn't exist
+  locally is created from the source's definition.
 
 In the dashboard, **Sync from source** on the database page opens the source settings and runs the sync, with
 progress. A dot on the button means the source is complete and its password saved (hover for the source); while a
@@ -363,7 +374,7 @@ gantry envmap <app> [KEY=NAME ...] [--omit KEY] [--reset KEY]
 gantry migrate <app> [info|migrate|validate|repair|baseline|clean] [--service postgres|mysql] [-y]
 gantry export <app> [-o FILE]
 gantry import <file> [--as NAME] [--set service.option=v ...] [--source service.field=v ...] [--repo NAME=PATH] [-y]
-gantry sync <app> [--service postgres|mysql] [--source field=v ...] [-y]   replaces local data with a copy of the source
+gantry sync <app> [--service postgres|mysql] [--table T ...] [--source field=v ...] [-y]   replaces local data (or just tables T) with the source's
 gantry destroy <app> [-y]                      deletes data volumes
 gantry mcp install|uninstall <app> [--agent claude|cursor|codex ...] [--dir PATH]
 gantry mcp status [--dir PATH]

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { EraserIcon, MoreHorizontalIcon, PencilIcon, Trash2Icon } from "lucide-react";
+import { IconButton } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -42,20 +43,17 @@ export function TableActionButtons(props: Props) {
     <>
       {actions.isTable && (
         <>
-          <Button variant="outline" size="sm" onClick={actions.rename}>
+          <IconButton label="Rename" onClick={actions.rename}>
             <PencilIcon />
-            Rename
-          </Button>
-          <Button variant="outline" size="sm" onClick={actions.truncate}>
+          </IconButton>
+          <IconButton label="Truncate" onClick={actions.truncate}>
             <EraserIcon />
-            Truncate
-          </Button>
+          </IconButton>
         </>
       )}
-      <Button variant="destructive" size="sm" onClick={actions.drop}>
+      <IconButton label="Drop" variant="destructive" onClick={actions.drop}>
         <Trash2Icon />
-        Drop
-      </Button>
+      </IconButton>
       {actions.dialog}
     </>
   );
