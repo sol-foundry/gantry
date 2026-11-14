@@ -36,6 +36,12 @@ sealed class Dialect {
     /** schema, name, kind (table/view/...), estimated rows, total bytes */
     abstract val tablesSql: String
 
+    /**
+     * names of mirror schemas: ones holding nothing but views that each read a same-named table or view of another
+     * schema, like a read-only access layer over `public`. Null for databases without schemas.
+     */
+    open val mirrorSchemasSql: String? = null
+
     /** (schema, table) -> name, type, nullable, default expression, part of primary key, extra */
     abstract val columnsSql: String
 
@@ -107,6 +113,34 @@ sealed class Dialect {
             WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND NOT c.relispartition
               AND n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg\_%'
             ORDER BY 1, 2
+            """.trimIndent()
+
+        // A view's rewrite rule depends on every relation it reads; a mirror reads exactly one. Schemas with
+        // functions, tables or anything else are never mirrors, and neither is public.
+        override val mirrorSchemasSql =
+            """
+            WITH refs AS (
+                SELECT r.ev_class AS view, array_agg(DISTINCT d.refobjid) AS targets
+                FROM pg_rewrite r
+                JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid
+                 AND d.refclassid = 'pg_class'::regclass AND d.refobjid <> r.ev_class
+                GROUP BY r.ev_class
+            ),
+            objects AS (
+                SELECT c.relnamespace AS schema,
+                       c.relkind = 'v' AND cardinality(refs.targets) = 1 AND t.relname = c.relname
+                         AND t.relnamespace <> c.relnamespace AS mirror
+                FROM pg_class c
+                LEFT JOIN refs ON refs.view = c.oid
+                LEFT JOIN pg_class t ON t.oid = refs.targets[1]
+            )
+            SELECT n.nspname
+            FROM pg_namespace n JOIN objects o ON o.schema = n.oid
+            WHERE n.nspname NOT IN ('public', 'information_schema') AND n.nspname NOT LIKE 'pg\_%'
+              AND NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = n.oid)
+            GROUP BY n.nspname
+            HAVING bool_and(COALESCE(o.mirror, false))
+            ORDER BY 1
             """.trimIndent()
 
         override val columnsSql =

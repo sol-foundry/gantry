@@ -24,6 +24,8 @@ data class DatabaseInfo(
     val hasSchemas: Boolean,
     val schemas: List<String>,
     val tables: List<TableSummary>,
+    /** Schemas of nothing but views over same-named tables elsewhere; see [Dialect.mirrorSchemasSql]. */
+    val mirrorSchemas: List<String> = emptyList(),
 )
 
 @Serializable

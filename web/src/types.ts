@@ -116,6 +116,8 @@ export interface DatabaseInfo {
   hasSchemas: boolean;
   schemas: string[];
   tables: TableSummary[];
+  /** Schemas of nothing but views over same-named tables in other schemas, such as a read-only access layer. */
+  mirrorSchemas: string[];
 }
 
 export interface ColumnInfo {

@@ -140,7 +140,11 @@ Per service:
 The database browser works at two levels:
 
 - **Database:** tables and views with row estimates and sizes; create, rename, truncate and drop tables; create
-  and drop schemas (Postgres).
+  and drop schemas (Postgres). The table list filters by name and by kind (**All**, **Tables**, **Views**), and
+  each schema's group folds. *Mirror* schemas (Postgres), ones holding nothing but views that each read a
+  same-named table in another schema, such as a read-only access layer for a BI tool, are grouped in a
+  **Mirror schemas** section at the bottom, folded at first. A name filter, or the table you have open, shows
+  through a fold.
 - **Table:** page, sort and filter rows (`WHERE` clause); insert, edit (double-click a cell) and delete rows by
   primary key; add, edit and drop columns; create and drop indexes; view constraints.
 
