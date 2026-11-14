@@ -12,6 +12,7 @@ import java.net.Socket
 import java.nio.file.Files
 import java.security.KeyStore
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
@@ -32,9 +33,11 @@ class PgProxy(
     private val limits: Limits,
     private val queue: LogQueue,
     private val listenHost: String = "0.0.0.0",
+    private val newServerSocket: () -> ServerSocket = ::ServerSocket,
 ) {
     private val ssl: SSLContext? = tls?.let(::sslContext)
     private val ids = AtomicLong()
+    private val acceptReported = AtomicBoolean()
     private val connections = ConcurrentHashMap.newKeySet<Connection>()
 
     @Volatile
@@ -46,7 +49,7 @@ class PgProxy(
 
     fun start() {
         val socket =
-            ServerSocket().apply {
+            newServerSocket().apply {
                 reuseAddress = true
                 bind(InetSocketAddress(listenHost, listen))
             }
@@ -57,8 +60,14 @@ class PgProxy(
                     val client =
                         try {
                             socket.accept()
-                        } catch (_: IOException) {
-                            break
+                        } catch (e: IOException) {
+                            if (socket.isClosed) break
+                            // Transient (e.g. out of file descriptors): keep listening rather than look healthy but dead.
+                            if (acceptReported.compareAndSet(false, true)) {
+                                System.err.println("gantry: query-log proxy for $service failed to accept a connection: $e")
+                            }
+                            Thread.sleep(ACCEPT_RETRY_MS)
+                            continue
                         }
                     val connection = Connection(client, ids.incrementAndGet())
                     connections += connection
@@ -193,6 +202,7 @@ class PgProxy(
         const val STARTUP_TIMEOUT_MS = 30_000
         const val CONNECT_TIMEOUT_MS = 10_000
         const val JOIN_MS = 10_000L
+        const val ACCEPT_RETRY_MS = 100L
 
         /** One untyped startup-phase frame, length included, or null when the stream ends or the length is absurd. */
         fun readStartup(input: InputStream): ByteArray? {

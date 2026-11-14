@@ -1,5 +1,8 @@
 package dev.gantry.dblog
 
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.PrintStream
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -52,12 +55,27 @@ class LogQueueTest {
     }
 
     @Test
-    fun `a failing writer never stops the queue`() {
-        val file = createTempDirectory("gantry-queue").resolve("q.jsonl")
-        val writer = QueryLogWriter(file, 10_000_000)
-        writer.close()
-        val queue = LogQueue(writer)
-        repeat(3) { queue.offer(entry("s$it", null)) }
-        queue.close()
+    fun `a failing writer never stops the queue and is reported once`() {
+        val written = ArrayList<String>()
+        var calls = 0
+        val err = ByteArrayOutputStream()
+        val stderr = System.err
+        System.setErr(PrintStream(err, true))
+        try {
+            val queue =
+                LogQueue({ entry ->
+                    calls++
+                    if (calls <= 2) throw IOException("disk full")
+                    written += entry.sql
+                })
+            repeat(4) { queue.offer(entry("s$it", null)) }
+            queue.close()
+        } finally {
+            System.setErr(stderr)
+        }
+
+        assertEquals(4, calls)
+        assertEquals(listOf("s2", "s3"), written)
+        assertEquals(1, Regex("cannot write the query log").findAll(err.toString()).count())
     }
 }

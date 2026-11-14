@@ -9,14 +9,16 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 /**
- * Hands [QueryEntry]s to [writer] on one background thread, so recording never waits on the disk. It holds at most
+ * Hands [QueryEntry]s to a [QueryLogWriter] on one background thread, so recording never waits on the disk. It holds at most
  * about [maxRowBytes] of row data: an entry that does not fit is still queued, without its columns and rows and marked
  * truncated, so every statement keeps its SQL, parameters, timing and outcome.
  */
-class LogQueue(
-    private val writer: QueryLogWriter,
+class LogQueue internal constructor(
+    private val append: (QueryEntry) -> Unit,
     private val maxRowBytes: Long = 32L * 1024 * 1024,
 ) : Closeable {
+    constructor(writer: QueryLogWriter, maxRowBytes: Long = 32L * 1024 * 1024) : this(writer::append, maxRowBytes)
+
     private val pending = LinkedBlockingQueue<Any>()
     private val heldBytes = AtomicLong()
     private val closed = AtomicBoolean()
@@ -53,7 +55,7 @@ class LogQueue(
             if (item === STOP) return
             val held = item as Held
             try {
-                writer.append(held.entry)
+                append(held.entry)
             } catch (e: IOException) {
                 report(e)
             } catch (e: RuntimeException) {

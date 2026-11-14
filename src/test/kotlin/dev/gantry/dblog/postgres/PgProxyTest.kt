@@ -7,7 +7,9 @@ import dev.gantry.dblog.QueryLog
 import dev.gantry.dblog.QueryLogWriter
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
+import java.io.IOException
 import java.io.InputStream
+import java.io.PrintStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -16,6 +18,7 @@ import java.nio.file.Path
 import java.security.KeyStore
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.TrustManagerFactory
@@ -234,6 +237,36 @@ class PgProxyTest {
         upstream.await()
         assertContentEquals(cancel, upstream.received.toByteArray())
         assertTrue(entries(proxy).isEmpty())
+    }
+
+    @Test
+    fun `an accept failure that is not a close keeps the proxy accepting`() {
+        val upstream = scripted()
+        closeables += upstream
+        val failures = AtomicInteger()
+        val flaky =
+            object : ServerSocket() {
+                override fun accept(): Socket {
+                    if (failures.getAndIncrement() < 2) throw IOException("Too many open files")
+                    return super.accept()
+                }
+            }
+        val err = ByteArrayOutputStream()
+        val stderr = System.err
+        System.setErr(PrintStream(err, true))
+        try {
+            val proxy =
+                PgProxy("postgres", 0, "127.0.0.1", upstream.port, null, Limits(1000, 1000), queue, listenHost = "127.0.0.1") { flaky }
+            proxy.start()
+            closeables += AutoCloseable { proxy.stop() }
+            val client = connect(proxy)
+            client.getOutputStream().write(startup)
+            assertContentEquals(serverHello, client.getInputStream().readExactly(serverHello.size))
+        } finally {
+            System.setErr(stderr)
+        }
+        assertTrue(failures.get() >= 3)
+        assertEquals(1, Regex("Too many open files").findAll(err.toString()).count())
     }
 
     @Test
