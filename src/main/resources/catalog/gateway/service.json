@@ -1,27 +1,36 @@
 {
   "id": "gateway",
-  "description": "REST API gateway (Apache APISIX) in front of your app, with gantry-auth verifying logins (Firebase, Cognito, Supabase, JWT or a custom authorizer). Configure routes and auth in the app's gateway.yml; with none it is a transparent proxy to `upstream`.",
+  "description": "API gateway in front of your app: REST through Apache APISIX and WebSocket through a pub/sub relay, both on the same port and behind the same logins (gantry-auth: Firebase, Cognito, Supabase, JWT or a custom authorizer). Configure routes, auth and the WebSocket connect hooks in the app's gateway.yml; with none it is a transparent proxy to `upstream` and sockets are open.",
   "options": {
     "version": "3.19.0-debian",
-    "upstream": "http://localhost:8080"
+    "upstream": "http://localhost:8080",
+    "node_version": "22"
   },
   "option_meta": {
     "upstream": {
       "help": "Where requests go when gateway.yml names no upstream: your app's base URL, without a path. localhost is reached through the Docker host."
+    },
+    "node_version": {
+      "help": "Node.js version the WebSocket relay runs on."
     }
   },
   "ports": {
-    "main": 8090
+    "main": 8090,
+    "websocket": 8091
   },
   "dirs": [
-    "gateway-log"
+    "gateway-log",
+    "websocket"
   ],
   "files": {
     "config.yaml": "config.yaml.tmpl",
-    "apisix.yaml": "apisix.yaml.tmpl"
+    "apisix.yaml": "apisix.yaml.tmpl",
+    "websocket.js": "websocket.js.tmpl"
   },
   "env": {
-    "GATEWAY_URL": "http://localhost:{{port.main}}"
+    "GATEWAY_URL": "http://localhost:{{port.main}}",
+    "GATEWAY_WS_URL": "ws://localhost:{{port.main}}",
+    "GATEWAY_WS_MANAGEMENT_URL": "http://localhost:{{port.websocket}}"
   },
   "ui": {
     "builtin": "gateway"

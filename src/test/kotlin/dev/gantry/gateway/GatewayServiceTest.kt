@@ -107,9 +107,120 @@ class GatewayServiceTest {
         assertContains(compose, "- --upstream\n      - \"http://localhost:8080\"")
         assertContains(compose, "- --app\n      - \"shop\"")
         assertContains(compose, "/config/gateway-secrets.json")
-        assertEquals(2, Regex("host.docker.internal:host-gateway").findAll(compose).count())
+        assertEquals(3, Regex("host.docker.internal:host-gateway").findAll(compose).count())
         assertTrue(Files.isDirectory(dir.resolve("gateway-log")))
         assertEquals("http://localhost:$port", engine.env(engine.loadApp("shop")).toMap()["GATEWAY_URL"])
+    }
+
+    @Test
+    fun `the gateway runs the websocket relay on its own port and publishes both urls`() {
+        engine.create("shop", services = listOf("gateway"))
+        val ports = engine.loadApp("shop").service("gateway")!!.ports
+        val compose = dir.resolve("compose.yml").readText()
+
+        assertContains(dir.resolve("websocket.js").readText(), "server.on('upgrade'")
+        assertContains(compose, "container_name: \"shop-gateway-ws\"")
+        assertContains(compose, "\"$dir/websocket:/hooks:ro\"")
+        assertContains(compose, "\"127.0.0.1:${ports.getValue("websocket")}:8081\"")
+        // The relay never sees the app directory, which holds the gateway's secrets.
+        assertFalse("\"$dir:/hooks" in compose)
+        val env = engine.env(engine.loadApp("shop")).toMap()
+        assertEquals("ws://localhost:${ports.getValue("main")}", env["GATEWAY_WS_URL"])
+        assertEquals("http://localhost:${ports.getValue("websocket")}", env["GATEWAY_WS_MANAGEMENT_URL"])
+    }
+
+    @Test
+    fun `each gateway container is labelled with the files it mounts, so an edit restarts only those`() {
+        engine.create("shop", services = listOf("gateway"))
+
+        fun hashes(): Map<String, String?> {
+            val compose = dir.resolve("compose.yml").readText()
+            return listOf("gateway", "gantry-auth", "gateway-ws").associateWith { name ->
+                val block = compose.substringAfter("\n  $name:\n").split(Regex("\n  (?=[a-zA-Z0-9_-]+:\n)")).first()
+                Regex("gantry.config-hash: \"(\\w+)\"").find(block)?.groupValues?.get(1)
+            }
+        }
+        val before = hashes()
+        assertTrue(before.getValue("gateway") != null && before.getValue("gateway-ws") != null)
+        assertEquals(null, before.getValue("gantry-auth"))
+
+        assertEquals(emptyList(), engine.saveGatewayConfig("shop", "routes:\n  - name: api\n    match: { path: /api/** }\n"))
+        val after = hashes()
+
+        assertNotEquals(before.getValue("gateway"), after.getValue("gateway"))
+        assertEquals(before.getValue("gateway-ws"), after.getValue("gateway-ws"))
+    }
+
+    @Test
+    fun `websocket hooks are written for the relay with the upstream as the container reaches it`() {
+        engine.create("shop", services = listOf("gateway"))
+        val hooks = dir.resolve(WEBSOCKET_HOOKS_FILE)
+        assertContains(hooks.readText(), "\"routeSelection\": \"\$request.body.action\"")
+        assertContains(hooks.readText(), "\"connect\": null")
+
+        assertEquals(
+            emptyList(),
+            engine.saveGatewayConfig(
+                "shop",
+                """
+                websocket:
+                  connect: "{{upstream}}/realtime/connect/{{connectionId}}"
+                  disconnect: "http://localhost:9000/gone/{{connectionId}}"
+                  routes:
+                    ${'$'}default: "{{upstream}}/ws/{{connectionId}}"
+                """.trimIndent(),
+            ),
+        )
+
+        val text = hooks.readText()
+        assertContains(text, "\"connect\": \"http://host.docker.internal:8080/realtime/connect/{{connectionId}}\"")
+        assertContains(text, "\"disconnect\": \"http://localhost:9000/gone/{{connectionId}}\"")
+        assertContains(text, "\"\$default\": \"http://host.docker.internal:8080/ws/{{connectionId}}\"")
+    }
+
+    @Test
+    fun `apps saved with the websocket or realtime service fold it into the gateway, keeping its port and env renames`() {
+        engine.create("shop", services = listOf("gateway"))
+        val file = home.resolve("apps/shop/app.json")
+        // What 0.3.0 saved: a separate websocket service, with an env rename keyed by its variable.
+        file.writeText(
+            """{"name": "shop", "services": [{"id": "websocket", "options": {"version": "20"}}], "envNames": {"WEBSOCKET_URL": "RELAY_URL"}}""",
+        )
+        engine.updatePorts {
+            it.remove("shop/gateway/main")
+            it.remove("shop/gateway/websocket")
+            it["shop/websocket/main"] = 8192
+        }
+
+        val app = engine.loadApp("shop")
+
+        assertEquals(listOf("gateway"), app.services.map { it.id })
+        assertEquals(8192, app.service("gateway")!!.ports["websocket"])
+        // The websocket service's version was Node's, not APISIX's: it does not carry over.
+        assertEquals(emptyMap(), app.service("gateway")!!.options)
+        assertEquals(mapOf("GATEWAY_WS_MANAGEMENT_URL" to "RELAY_URL"), app.envNames)
+        assertEquals("http://localhost:8192", engine.env(app).toMap()["RELAY_URL"])
+        assertFalse("shop/websocket/" in home.resolve("ports.json").readText())
+    }
+
+    @Test
+    fun `an app with both a gateway and the realtime service keeps its own gateway`() {
+        engine.create("shop", services = listOf("gateway"))
+        engine.add("shop", "gateway", mapOf("upstream" to "http://localhost:9999"))
+        val file = home.resolve("apps/shop/app.json")
+        file.writeText(file.readText().replace("\"services\": [", "\"services\": [{\"id\": \"realtime\"},"))
+
+        val app = engine.loadApp("shop")
+
+        assertEquals(listOf("gateway"), app.services.map { it.id })
+        assertEquals("http://localhost:9999", app.service("gateway")!!.options["upstream"])
+    }
+
+    @Test
+    fun `the old websocket and realtime ids add the gateway`() {
+        engine.create("shop")
+        assertEquals(listOf("gateway"), engine.add("shop", "realtime").services.map { it.id })
+        assertEquals(listOf("gateway"), engine.add("shop", "websocket").services.map { it.id })
     }
 
     @Test

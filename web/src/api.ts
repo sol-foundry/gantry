@@ -24,6 +24,7 @@ import type {
   ServiceChange,
   SourceInfo,
   SourceSettings,
+  SocketStatus,
   SqlService,
   SyncJob,
   TableDetail,
@@ -81,6 +82,7 @@ export const api = {
 
   gatewayCalls: (name: string, filter: { status?: string; path?: string; limit?: number }) =>
     get<GatewayCall[]>(`${app(name)}/gateway/calls?${qs(filter)}`),
+  gatewaySockets: (name: string) => get<SocketStatus>(`${app(name)}/gateway/sockets`),
   clearGatewayCalls: (name: string) => request<{ ok: boolean }>("DELETE", `${app(name)}/gateway/calls`),
   gatewayConfig: (name: string) => get<{ text: string }>(`${app(name)}/gateway/config`),
   saveGatewayConfig: (name: string, text: string) => request<{ ok: boolean }>("PUT", `${app(name)}/gateway/config`, { text }),

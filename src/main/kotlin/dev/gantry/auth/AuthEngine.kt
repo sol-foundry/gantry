@@ -5,8 +5,10 @@ import dev.gantry.gateway.GatewayConfig
 import dev.gantry.gateway.HttpCall
 import dev.gantry.gateway.SECRET_REF
 import dev.gantry.gateway.Step
+import dev.gantry.gateway.WEBSOCKET_ROUTE
 import dev.gantry.gateway.defaultHeaders
 import dev.gantry.gateway.headersFor
+import dev.gantry.gateway.websocketHeaders
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -196,6 +198,7 @@ class AuthEngine(
     private fun flowFor(route: String): Flow? {
         config.routes.firstOrNull { it.name == route }?.let { return Flow(it.auth, it.steps, config.headersFor(it)) }
         if (route == "default") return Flow(config.default.auth, config.default.steps, config.defaultHeaders())
+        if (route == WEBSOCKET_ROUTE) return Flow(config.websocket.auth, config.websocket.steps, config.websocketHeaders())
         return null
     }
 

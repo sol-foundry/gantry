@@ -172,6 +172,49 @@ class GatewayConfigTest {
     }
 
     @Test
+    fun `validate reserves the route name websocket and checks the websocket block`() {
+        val config =
+            parseGatewayConfig(
+                """
+                routes:
+                  - name: websocket
+                    match: {path: /a}
+                websocket:
+                  auth: nobody
+                  steps: [missing]
+                  connect: "{{upstream}}/connect/{{connectionId}}/{{email}}"
+                  disconnect: "ftp://x/{{connectionId}}"
+                  routeSelection: action
+                  routes:
+                    send: "{{upstream}}/send/{{token}}"
+                """.trimIndent(),
+            )
+        val problems = config.validate()
+
+        assertContains(problems, "route name 'websocket' is reserved")
+        assertContains(problems, "websocket: unknown authorizer 'nobody'")
+        assertContains(problems, "websocket: unknown step 'missing'")
+        assertContains(problems, "websocket.connect: only {{upstream}} and {{connectionId}} may be used, not {{email}}")
+        assertContains(problems, "websocket.disconnect: must be an http(s) URL")
+        assertContains(problems, "websocket.routeSelection: must be \$request.body.<field>")
+        assertContains(problems, "websocket.routes.send: only {{upstream}} and {{connectionId}} may be used, not {{token}}")
+    }
+
+    @Test
+    fun `a valid websocket block reads back and leaves the file short without one`() {
+        val yml =
+            """
+            websocket:
+              connect: "{{upstream}}/connect/{{connectionId}}"
+            """.trimIndent()
+        val config = parseGatewayConfig(yml)
+
+        assertEquals(emptyList(), config.validate())
+        assertEquals("{{upstream}}/connect/{{connectionId}}", config.websocket.connect)
+        assertEquals("", encodeGatewayConfig(GatewayConfig()))
+    }
+
+    @Test
     fun `secretNames collects every reference`() {
         val config = parseGatewayConfig(citadel)
         assertEquals(setOf("INTERNAL_API_KEY"), config.secretNames())

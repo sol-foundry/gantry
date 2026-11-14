@@ -136,13 +136,24 @@ class ImporterTest {
     }
 
     @Test
-    fun `a file exported with the realtime service imports as websocket`() {
-        val p = preview(file(services = mapOf("realtime" to ExportedService()), envNames = mapOf("REALTIME_URL" to "RELAY_URL")))
-        assertEquals(setOf("websocket"), p.request.services.keys)
-        assertEquals(mapOf("WEBSOCKET_URL" to "RELAY_URL"), p.request.envNames)
-        val app = Importer(engine).apply(p.request)
-        assertEquals(listOf("websocket"), app.services.map { it.id })
-        assertEquals(mapOf("WEBSOCKET_URL" to "RELAY_URL"), app.envNames)
+    fun `a file exported with the realtime or websocket service imports it as the gateway`() {
+        val p =
+            preview(
+                file(
+                    services = mapOf("websocket" to ExportedService(options = mapOf("version" to "20"))),
+                    envNames = mapOf("REALTIME_URL" to "RELAY_URL"),
+                ),
+            )
+
+        assertEquals(setOf("gateway"), p.request.services.keys)
+        // The websocket service's version was Node's; as the gateway's it would pick an APISIX image.
+        assertNotEquals(
+            "20",
+            p.request.services
+                .getValue("gateway")
+                .options["version"],
+        )
+        assertEquals(mapOf("GATEWAY_WS_MANAGEMENT_URL" to "RELAY_URL"), p.request.envNames)
     }
 
     @Test

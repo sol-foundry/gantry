@@ -19,6 +19,7 @@ import dev.gantry.gateway.formYaml
 import dev.gantry.gateway.gatewayYmlHasComments
 import dev.gantry.gateway.parseGatewayConfig
 import dev.gantry.gateway.saveGatewayConfig
+import dev.gantry.gateway.socketStatus
 import dev.gantry.share.Importer
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -224,6 +225,10 @@ private fun Route.apiRoutes(
                 val app = gatewayApp(engine) ?: return@delete
                 blocking { engine.callLog(app).clear() }
                 call.respond(Ok())
+            }
+            get("/sockets") {
+                val app = gatewayApp(engine) ?: return@get
+                call.respond(blocking { engine.socketStatus(app) })
             }
             get("/calls/{id}") {
                 val app = gatewayApp(engine) ?: return@get

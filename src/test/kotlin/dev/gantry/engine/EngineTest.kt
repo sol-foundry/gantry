@@ -66,7 +66,7 @@ class EngineTest {
             "elasticmq",
             "temporal",
             "kafka",
-            "websocket",
+            "dynamodb",
         ).forEach { assertTrue(it in e.message!!, "lists $it") }
     }
 
@@ -298,55 +298,6 @@ class EngineTest {
         }
         assertFailsWith<GantryException> { engine.add("shop", "kafka", mapOf("partitions" to "0")) }
         assertEquals(emptyMap(), engine.loadApp("shop").service("kafka")!!.options)
-    }
-
-    @Test
-    fun `websocket gateway renders its script and publishes its urls`() {
-        engine.create("shop")
-        val port =
-            engine
-                .add("shop", "websocket")
-                .service("websocket")!!
-                .ports
-                .getValue("main")
-
-        assertTrue("server.on('upgrade'" in engine.appDir("shop").resolve("websocket.js").readText())
-        val compose = engine.appDir("shop").resolve("compose.yml").readText()
-        assertTrue("/websocket.js:/app/websocket.js:ro" in compose)
-        assertTrue("container_name: \"shop-websocket\"" in compose)
-        assertEquals("http://localhost:$port", env("shop")["WEBSOCKET_URL"])
-        assertEquals("ws://localhost:$port/ws", env("shop")["WEBSOCKET_WS_URL"])
-    }
-
-    @Test
-    fun `apps saved with the realtime service are upgraded to websocket and keep its port and env renames`() {
-        engine.create("shop", services = listOf("websocket"))
-        engine.setEnvNames("shop", mapOf("WEBSOCKET_URL" to "RELAY_URL"))
-        val file = home.resolve("apps/shop/app.json")
-        // What an older gantry saved: the service under its old id, a rename keyed by the old variable.
-        file.writeText(file.readText().replace("\"websocket\"", "\"realtime\"").replace("\"WEBSOCKET_URL\"", "\"REALTIME_URL\""))
-        engine.updatePorts {
-            it.remove("shop/websocket/main")
-            it["shop/realtime/main"] = 8092
-        }
-
-        assertEquals(listOf("websocket"), engine.readApp("shop").services.map { it.id })
-        val app = engine.loadApp("shop")
-
-        assertEquals(listOf("websocket"), app.services.map { it.id })
-        assertEquals(8092, app.service("websocket")!!.ports["main"])
-        assertEquals(mapOf("WEBSOCKET_URL" to "RELAY_URL"), app.envNames)
-        assertTrue("\"realtime\"" !in file.readText())
-        assertTrue("shop/realtime/" !in home.resolve("ports.json").readText())
-        assertEquals("http://localhost:8092", env("shop")["RELAY_URL"])
-        assertEquals("ws://localhost:8092/ws", env("shop")["WEBSOCKET_WS_URL"])
-        assertTrue("container_name: \"shop-websocket\"" in engine.appDir("shop").resolve("compose.yml").readText())
-    }
-
-    @Test
-    fun `the old realtime id is still accepted when adding`() {
-        engine.create("shop")
-        assertNotNull(engine.add("shop", "realtime").service("websocket"))
     }
 
     @Test

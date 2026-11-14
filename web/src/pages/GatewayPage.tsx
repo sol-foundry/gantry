@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { InboxIcon, ListIcon, SettingsIcon, ShieldIcon, WaypointsIcon } from "lucide-react";
+import { InboxIcon, ListIcon, RadioTowerIcon, SettingsIcon, ShieldIcon, WaypointsIcon } from "lucide-react";
 import { api } from "@/api";
 import { ErrorAlert, PageHeader } from "@/components/common";
 import { AuthorizerList } from "@/components/gateway/AuthorizerList";
 import { CallDetail } from "@/components/gateway/CallDetail";
 import { CallFilters, CallTable } from "@/components/gateway/CallList";
 import { ConfigEditor } from "@/components/gateway/ConfigEditor";
+import { SocketList } from "@/components/gateway/SocketList";
 import { Card, CardContent } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -20,7 +21,7 @@ const CALLS_POLL_MS = 2000;
 const CALLS_LIMIT = 200;
 const PATH_DEBOUNCE_MS = 300;
 
-/** The REST API gateway: live call log, gateway.yml editor and custom authorizers. */
+/** The API gateway: live REST call log, WebSocket connections and events, gateway.yml editor and custom authorizers. */
 export function GatewayPage({ app }: { app: string }) {
   return (
     <>
@@ -31,13 +32,17 @@ export function GatewayPage({ app }: { app: string }) {
       <PageHeader
         icon={<WaypointsIcon className="size-5" />}
         title={serviceLabel("gateway")}
-        description="Calls through the gateway, its gateway.yml, and custom authorizers."
+        description="REST calls and WebSocket connections through the gateway, its gateway.yml, and custom authorizers."
       />
       <Tabs defaultValue="calls" className="flex flex-col gap-4">
         <TabsList>
           <TabsTrigger value="calls">
             <ListIcon />
             Calls
+          </TabsTrigger>
+          <TabsTrigger value="sockets">
+            <RadioTowerIcon />
+            Sockets
           </TabsTrigger>
           <TabsTrigger value="config">
             <SettingsIcon />
@@ -50,6 +55,9 @@ export function GatewayPage({ app }: { app: string }) {
         </TabsList>
         <TabsContent value="calls">
           <Calls app={app} />
+        </TabsContent>
+        <TabsContent value="sockets">
+          <SocketList app={app} />
         </TabsContent>
         <TabsContent value="config" keepMounted>
           <ConfigEditor app={app} />

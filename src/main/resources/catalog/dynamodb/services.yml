@@ -1,0 +1,49 @@
+  dynamodb:
+    image: "amazon/dynamodb-local:{{opt.version}}"
+    container_name: "{{app}}-dynamodb"
+    # -sharedDb: one database, whatever access key and region a client signs with.
+{{@dynamodb_storage}}
+    ports:
+      - "127.0.0.1:{{port.main}}:8000"
+    healthcheck:
+      test: ["CMD", "bash", "-c", ":> /dev/tcp/127.0.0.1/8000"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  dynamodb-ui:
+    image: aaronshaf/dynamodb-admin:5.1.3
+    container_name: "{{app}}-dynamodb-ui"
+    environment:
+      DYNAMO_ENDPOINT: http://dynamodb:8000
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+    ports:
+      - "127.0.0.1:{{port.ui}}:8001"
+    depends_on:
+      dynamodb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-shot behind a profile: `up --wait` treats any exited container as a failure, even exit 0.
+  dynamodb-init:
+    image: amazon/aws-cli:2.22.35
+    container_name: "{{app}}-dynamodb-init"
+    profiles: ["init"]
+    environment:
+      AWS_ENDPOINT_URL_DYNAMODB: http://dynamodb:8000
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+    depends_on:
+      dynamodb:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - |
+        echo "[dynamodb-init] ensuring declared tables"
+{{@dynamodb_create_tables}}
+    restart: "no"

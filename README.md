@@ -14,8 +14,8 @@ Cursor, Codex) look up an app's connection details themselves over MCP.
 - Built-in explorers for databases and queues; RedisInsight, the Temporal UI and Kafka UI come with their services.
 - Postgres and MySQL run [Flyway](https://flywaydb.org) migrations from your service's own folder, and can be
   synced from a source database such as stage.
-- A REST API gateway in front of your app checks logins (Firebase, Cognito, Supabase, JWT or your own code) and logs
-  every call, so you can see exactly what your app was sent.
+- An API gateway in front of your app checks logins (Firebase, Cognito, Supabase, JWT or your own code) for REST
+  calls and WebSocket connections alike, and logs both, so you can see exactly what your app was sent.
 
 ## Install
 
@@ -169,18 +169,18 @@ can run SQL and manage containers.
 | `temporal` | Temporal dev server | `version`, `search_attributes` |
 | `kafka` | Apache Kafka (single KRaft broker), plus Kafka UI | `version`, `topics`, `partitions` |
 | `mysql` | MySQL | `version`, `name`, `user`, `password`, `root_password` (generated), `migrations`, `migrate_on_up` |
-| `gateway` | REST API gateway (Apache APISIX) with login checks; see [REST API gateway](#rest-api-gateway) | `version`, `upstream` |
-| `websocket` | WebSocket gateway: a pub/sub relay standing in for an AWS API Gateway WebSocket API | `version` (Node) |
+| `gateway` | API gateway for REST (Apache APISIX) and WebSocket on one port, with login checks; see [API gateway](#api-gateway) | `version`, `upstream`, `node_version` |
+| `dynamodb` | Amazon DynamoDB Local, plus DynamoDB Admin as its UI | `version`, `tables`, `persist` |
 
 `gantry services` prints the same list with defaults.
 
 - `queues` — `name[:visibilitySecs[:dlqName]],...`; each queue gets a dead-letter queue (default `<name>-dlq`).
 - `search_attributes` — `Name=Type,...` registered on the Temporal dev server.
-- `websocket` — browsers connect to `WEBSOCKET_WS_URL` (`/ws`) and send `{"action": "subscribe", "topic": "..."}`
-  (or `unsubscribe`, or `topics: [...]`); the app POSTs `{"topic", "eventType", "payload"}` to `WEBSOCKET_URL/publish`
-  and every subscriber of the topic receives it. `POST /subscribe` / `/unsubscribe` register topics for every open
-  connection, since locally there are no connection ids. Nothing persists across restarts. Behind the `gateway`,
-  route `/ws` and the HTTP paths to it as `auth: public`.
+- `tables` (dynamodb) — `name:hash[,range][+index=hash[,range][/keys]]...[~ttl]`, tables separated by `;`; each is
+  created on every `start` when missing. A key is `attr` or `attr#N` (`S`, the default, `N` or `B`); `+index` adds a
+  global secondary index projecting all attributes, or only keys with `/keys`; `~attr` turns on TTL. For example
+  `sessions:connectionId,topic+topic-index=topic/keys~ttl`. Apps reach it at `AWS_ENDPOINT_URL_DYNAMODB`, which recent
+  AWS SDKs read on their own; any credentials and region see the same tables.
 - `topics` — `name[:partitions],...` created on every `start` (existing topics are left alone). Other topics are
   auto-created on first use with `partitions` partitions (default 1). Host clients connect to
   `KAFKA_BOOTSTRAP_SERVERS`; other containers in the app use `kafka:19092`.
@@ -331,17 +331,22 @@ sync runs, the button shows a spinner and reopens the progress.
 - A source with a newer major version than the local database is refused, with a hint to raise the local
   `version` option.
 
-## REST API gateway
+## API gateway
 
-Put a REST API gateway in front of your app, so it gets the same login checks and identity headers locally as it does
-behind your production gateway. The `gateway` service runs [Apache APISIX](https://apisix.apache.org) plus
-gantry-auth, which verifies Firebase, Cognito, Supabase and other JWT logins, or asks an authorizer you write.
+Put an API gateway in front of your app, so it gets the same login checks and identity headers locally as it does
+behind your production gateway, for REST calls and WebSocket connections alike. The `gateway` service runs
+[Apache APISIX](https://apisix.apache.org), gantry-auth, which verifies Firebase, Cognito, Supabase and other JWT
+logins or asks an authorizer you write, and a WebSocket relay.
 
 ```bash
 gantry add my-app --service gateway --set upstream=http://localhost:8080   # your app's base URL, no path
 gantry start my-app
 curl localhost:8090/health                                                 # GATEWAY_URL, proxied to the upstream
 ```
+
+REST and WebSocket share the port: a request with `Upgrade: websocket`, on any path, is a WebSocket connection
+(`GATEWAY_WS_URL`, `ws://localhost:8090`); everything else is REST. Like an AWS API Gateway, the backend decides what
+to push and the frontend what to listen to; see [WebSocket](#websocket).
 
 Out of the box the gateway is a **transparent proxy**: every request goes to `upstream` and nobody is asked to log
 in. `localhost` in any URL means your machine (it is reached through the Docker host). gantry-auth runs from
@@ -361,7 +366,7 @@ gantry gateway reload my-app                        # after editing ~/.gantry/ap
 A hand edit of the file takes effect only once it is applied, with `gantry gateway reload` (or `config --file`):
 until then the gateway keeps running the config it last applied, and a file with problems is never applied.
 
-In the dashboard, the **REST API Gateway** page's **Config** tab shows the same file as a form: routes, logins, user
+In the dashboard, the **API Gateway** page's **Config** tab shows the same file as a form: routes, logins, user
 lookups and headers as plain fields, with a filter for long route lists. **Edit as YAML** opens the text instead.
 Saving from the form rewrites the file, so its comments are dropped. An example using most of it:
 
@@ -434,9 +439,8 @@ log:
 
 - **Routes.** A route `name` uses letters, digits, `.`, `_` and `-` (at most 64); `path` starts with `/`; `host` is a
   host name, optionally starting with `*.`. `auth` is `public`, `deny`, or the name of an authorizer. `upstream` on a route sends it elsewhere;
-  `default` takes `auth`, `steps`, `headers` and `upstream` too. Every route streams responses (SSE) unbuffered and
-  passes WebSocket upgrades through; on a protected route the authorizer checks the handshake (browsers can't set
-  headers on one, so use `tokenFrom: query:<name>` there).
+  `default` takes `auth`, `steps`, `headers` and `upstream` too. Every route streams responses (SSE) unbuffered.
+  The names `default` and `websocket` are reserved.
 - **Authorizers.** Every type takes `tokenFrom` (`header:Authorization`, the default, or `query:<name>`),
   `onUnverifiedEmail` (`deny` or `continue:<code>`), `denyStatus` (default 403) and `missingTokenStatus` (both
   400-599).
@@ -533,12 +537,53 @@ headers the route, or the top-level `headers`, names are copied onto it. **Anyth
 If the authorizer can't be reached, the request is refused with 503. Each template's README has the details and a
 way to try it on its own.
 
+### WebSocket
+
+Every app with a gateway takes WebSocket connections on the gateway's port, at any path: a local
+[API Gateway WebSocket API](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-websocket-api.html).
+The `websocket:` block of `gateway.yml` holds what the deployed API's routes, authorizer and integrations hold:
+
+```yaml
+authorizers:
+  fb-ws:
+    type: firebase
+    projectId: my-firebase-project
+    tokenFrom: query:token          # browsers can't set headers on a handshake: ws://localhost:8090?token=<id token>
+
+websocket:
+  auth: fb-ws                       # the $connect authorizer: public (the default), deny, or an authorizer
+  steps: [user]
+  headers:
+    x-user-id: "{{userId}}"         # sent to every integration, like an authorizer context mapped to a header
+  connect: "{{upstream}}/ws/connect/{{connectionId}}"        # $connect, POST; a non-2xx answer refuses the socket
+  disconnect: "{{upstream}}/ws/disconnect/{{connectionId}}"  # $disconnect, DELETE, whatever closed the socket
+  routeSelection: $request.body.action                       # the route selection expression (the default)
+  routes:
+    sendMessage: "{{upstream}}/ws/messages/{{connectionId}}" # a client message with "action": "sendMessage", POSTed as is
+    $default: "{{upstream}}/ws/other/{{connectionId}}"       # any other message
+```
+
+- Each integration is an HTTP call to your app (API Gateway's HTTP integration), with the handshake's headers.
+  Without a matching route or `$default`, the client gets `{"message": "Forbidden", ...}`, as from API Gateway.
+- Your app pushes through the **API Gateway Management API** at `GATEWAY_WS_MANAGEMENT_URL`, so an AWS SDK's
+  `ApiGatewayManagementApi` client works unchanged with its endpoint set there: `POST /@connections/{id}` sends the
+  body to the client as is, `GET` describes the connection, `DELETE` closes it; a closed connection answers
+  `410 GoneException`. Calls need an `Authorization` header (an SDK always signs), which is not checked.
+- API Gateway's limits apply: 32 KB frames, 128 KB messages, 10 minutes idle and 2 hours per connection.
+- Anything an app keeps per connection, such as which user or topics it belongs to, is the app's to store, as it is
+  on AWS; the `dynamodb` service is there for apps that use DynamoDB for it.
+- `GET /connections` and `GET /events` on the management port, `gantry gateway sockets`, and the dashboard's
+  **Sockets** tab show open connections and what happened on them.
+
 ### Call log
 
 Every call through the gateway is logged with its request and response (headers and bodies) and the auth decision.
 
-- In the dashboard, the **REST API Gateway** page's **Calls** tab lists them live, filters by status and path, and opens
-  each call; **Clear** empties the log. The **Authorizers** tab lists pushed authorizers.
+- In the dashboard, the **API Gateway** page's **Calls** tab lists them live, filters by status and path, and opens
+  each call; **Clear** empties the log. The **Sockets** tab shows open WebSocket connections and their
+  recent events (connect, rejected, message, post, gone, disconnect). The **Authorizers** tab lists pushed
+  authorizers.
+- `gantry gateway sockets my-app [--limit N]` prints the open connections and recent socket events.
 - `gantry gateway calls my-app [--limit N] [--status 4xx|404] [--path /api/**] [-f]` prints them as a table;
   `-f` keeps printing new ones. `gantry gateway clear my-app` empties the log; new calls keep being recorded.
 - Coding agents connected with `gantry mcp install` get a second tool, `get_gateway_calls`, with the same filters,
@@ -614,6 +659,7 @@ gantry sync <app> [--service postgres|mysql] [--table T ...] [--source field=v .
 gantry destroy <app> [-y]                      deletes data volumes
 gantry gateway calls <app> [--limit N] [--status 4xx|404] [--path GLOB] [-f]
 gantry gateway clear <app>                     empties the call log
+gantry gateway sockets <app> [--limit N]       open WebSocket connections and recent socket events
 gantry gateway config <app> [--file PATH]      prints gateway.yml, or checks and saves a file
 gantry authorizer init <name> --lang node|python|go [--dir PATH]
 gantry authorizer push <app> <name> <dir>

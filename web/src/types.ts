@@ -327,6 +327,34 @@ export interface SourceInfo {
   job: SyncJob | null;
 }
 
+/** An open WebSocket connection on the gateway; `userId` is its handshake's x-user-id header. */
+export interface SocketConnection {
+  connectionId: string;
+  userId: string | null;
+  since: string | null;
+  lastActiveAt: string | null;
+}
+
+/** One WebSocket event, newest first in a {@link SocketStatus}. */
+export interface SocketEvent {
+  time: string;
+  type: "connect" | "rejected" | "message" | "post" | "gone" | "disconnect" | "$disconnect" | string;
+  connectionId: string | null;
+  userId: string | null;
+  path: string | null;
+  status: number | null;
+  route: string | null;
+  bytes: number | null;
+  reason: string | null;
+}
+
+/** The gateway's WebSocket API; `running` is false when it does not answer. */
+export interface SocketStatus {
+  running: boolean;
+  connections: SocketConnection[];
+  events: SocketEvent[];
+}
+
 /** One call through the gateway, headers and bodies already redacted by the server. */
 export interface GatewayCall {
   id: string;
@@ -369,6 +397,18 @@ export interface GatewayConfig {
   cors: GatewayCors | null;
   stripHeaders: string[];
   log: GatewayLogSettings;
+  websocket: GatewayWebSocket;
+}
+
+/** WebSocket clients, like an API Gateway WebSocket API: `connect` (POST), `disconnect` (DELETE), message `routes`. */
+export interface GatewayWebSocket {
+  auth: string;
+  steps: string[];
+  headers: Record<string, string>;
+  connect: string | null;
+  disconnect: string | null;
+  routeSelection: string;
+  routes: Record<string, string>;
 }
 
 /** How a caller proves who they are; `type` is firebase, cognito, supabase, jwt or custom. */

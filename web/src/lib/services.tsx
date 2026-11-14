@@ -10,9 +10,9 @@ const SERVICES: Record<string, { label: string; tool?: Tool; uiName?: string }> 
   valkey: { label: "Valkey", uiName: "RedisInsight" },
   elasticmq: { label: "ElasticMQ", tool: "queue" },
   temporal: { label: "Temporal", uiName: "Temporal Web UI" },
-  gateway: { label: "REST API Gateway", tool: "gateway" },
+  gateway: { label: "API Gateway", tool: "gateway" },
   kafka: { label: "Kafka", uiName: "Kafka UI" },
-  websocket: { label: "WebSocket Gateway" },
+  dynamodb: { label: "DynamoDB", uiName: "DynamoDB Admin" },
 };
 
 export function serviceLabel(id: string): string {
@@ -45,4 +45,4 @@ export function serviceTool(id: string): Tool | undefined {
   return SERVICES[id]?.tool;
 }
 
-export const TOOL_LABELS: Record<Tool, string> = { postgres: "PostgreSQL", mysql: "MySQL", queue: "Queues", gateway: "REST API Gateway" };
+export const TOOL_LABELS: Record<Tool, string> = { postgres: "PostgreSQL", mysql: "MySQL", queue: "Queues", gateway: "API Gateway" };

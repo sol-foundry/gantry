@@ -1,0 +1,34 @@
+{
+  "id": "dynamodb",
+  "description": "Amazon DynamoDB Local with DynamoDB Admin as its UI. Declare tables with --set tables=name:hash[,range][+index=hash[,range][/keys]]...[~ttl];... ; each is created on `up` when missing. Any credentials and region reach the same tables. In memory unless persist=true.",
+  "options": {
+    "version": "2.5.4",
+    "tables": "",
+    "persist": "false"
+  },
+  "option_meta": {
+    "tables": {
+      "help": "Tables created on every `up` when missing: name:hash[,range], a key as attr or attr#N (S, N or B); +index=hash[,range] adds a global secondary index (/keys for KEYS_ONLY); ~attr turns on TTL. Separate tables with ';'."
+    },
+    "persist": {
+      "type": "boolean",
+      "help": "Keep tables and items across restarts (stored in a Docker volume until the app is destroyed)."
+    }
+  },
+  "ports": {
+    "main": 8000,
+    "ui": 8001
+  },
+  "volumes": [
+    "dynamodb-data"
+  ],
+  "post_up": [
+    "dynamodb-init"
+  ],
+  "env": {
+    "AWS_ENDPOINT_URL_DYNAMODB": "http://localhost:{{port.main}}"
+  },
+  "ui": {
+    "external": "http://localhost:{{port.ui}}"
+  }
+}

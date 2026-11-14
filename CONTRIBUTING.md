@@ -91,7 +91,7 @@ src/main/kotlin/dev/gantry/
   db/         SQL dialects (Postgres, MySQL), database explorer, Flyway migrations
   server/     dashboard JSON API (Ktor), queue explorer
   mcp/        agent access: stdio MCP server, connection details, per-agent config
-  gateway/    REST API gateway: gateway.yml model, APISIX renderer, call log, custom authorizers
+  gateway/    API gateway: gateway.yml model, APISIX renderer, call log, WebSocket relay client, custom authorizers
   auth/       gantry-auth, the gateway's token verifier (runs in a container)
 src/main/resources/
   catalog/    one directory per service (service.json + services.yml)
@@ -136,9 +136,9 @@ A new SQL database also needs a `Dialect` in `db/Dialect.kt` (quoting, catalog q
 JDBC driver and Flyway database module in `build.gradle.kts`; the explorer, row editing and migrations then work
 unchanged. It must expose `name`, `user`, `password` and `migrations` options and a `main` port.
 
-## REST API gateway
+## API gateway
 
-The `gateway` service is a catalog entry like any other, plus two parts the catalog can't express:
+The `gateway` service is a catalog entry like any other, plus three parts the catalog can't express:
 
 - **The renderer** (`gateway/`). `gateway.yml` is parsed and validated by `GatewayConfig.kt`; `ApisixRenderer.kt`
   turns it into APISIX's standalone `apisix.yaml` through the `{{@apisix_routes}}` computed block, and
@@ -149,6 +149,15 @@ The `gateway` service is a catalog entry like any other, plus two parts the cata
   image of its own: it runs `dev.gantry.auth.AuthServerKt` in a stock JRE container from a copy of Gantry's jars,
   staged under `~/.gantry/runtime` (`GatewayRuntime`), so the gateway only works from an installed build
   (`./gradlew installDist`). It reloads `gateway.yml` and the secrets file when they change.
+- **The WebSocket API** (`catalog/gateway/websocket.js.tmpl`), a zero-dependency Node script in the `gateway-ws`
+  container that behaves like an API Gateway WebSocket API: `$connect`/`$disconnect` and route integrations, the
+  `@connections` management API, AWS's error shapes and limits. The renderer adds a highest-priority APISIX route on
+  `Upgrade: websocket` (any path) that runs the `websocket:` block's auth and sends the socket to its :8080; the
+  management API is its :8081, the only port published. After each render the engine writes
+  `websocket/hooks.json` (the integration URLs, `{{upstream}}` resolved for the container), which the script reads
+  per use. The script is a template, so it must not contain `{{`; `WebSocketRelay.kt` reads its connections and
+  events for the CLI and the dashboard. The old `realtime` and `websocket` catalog services fold into the gateway
+  on load (`LEGACY_SERVICE_IDS`).
 
 Custom authorizers are scaffolded from `src/main/resources/authorizer-templates/<lang>/`; a template's README is
 its contract, and `AuthorizersTest` checks each template mentions it.

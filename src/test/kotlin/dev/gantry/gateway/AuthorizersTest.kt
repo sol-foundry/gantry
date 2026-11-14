@@ -157,9 +157,9 @@ class AuthorizersTest {
             assertContains(text, "env_file:\n      - \"$appDir/auth-$name.env\"")
         }
         assertEquals(2, Regex("expose:\n      - \"8080\"").findAll(text).count())
-        // apisix and gantry-auth, plus one per authorizer.
-        assertEquals(4, Regex("host.docker.internal:host-gateway").findAll(text).count())
-        assertEquals(4, Regex("restart: unless-stopped").findAll(text).count())
+        // apisix, gantry-auth and the WebSocket relay, plus one per authorizer.
+        assertEquals(5, Regex("host.docker.internal:host-gateway").findAll(text).count())
+        assertEquals(5, Regex("restart: unless-stopped").findAll(text).count())
         assertFalse("{{" in text)
     }
 

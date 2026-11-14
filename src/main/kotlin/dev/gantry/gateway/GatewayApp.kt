@@ -1,14 +1,17 @@
 package dev.gantry.gateway
 
+import dev.gantry.db.containerHost
 import dev.gantry.engine.App
 import dev.gantry.engine.Context
 import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
 import dev.gantry.engine.SecretStore
 import dev.gantry.engine.writeAtomically
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
+import java.net.URI
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -249,6 +252,58 @@ internal fun writeAppliedGatewayConfig(
     // Rewritten only on a change, so gantry-auth does not reload (and drop its step cache) on every render.
     if (!Files.exists(file) || Files.readString(file) != text) writeAtomically(file, text)
 }
+
+/** The hooks the WebSocket relay calls, read by it on every connection; see [writeWebSocketHooks]. */
+internal const val WEBSOCKET_HOOKS_FILE = "websocket/hooks.json"
+
+@Serializable
+private data class WebSocketHooks(
+    val connect: String? = null,
+    val disconnect: String? = null,
+    val routeSelection: String = DEFAULT_ROUTE_SELECTION,
+    val routes: Map<String, String> = emptyMap(),
+)
+
+/**
+ * After rendering: `websocket/hooks.json` holds the `websocket:` integrations (connect, disconnect, routes) with `{{upstream}}` resolved
+ * as the relay container reaches it (localhost is the Docker host); `{{connectionId}}` is left for the relay. Written
+ * only on a change, so a `gantry gateway reload` reaches open relays without a restart. Without a gateway it is removed.
+ */
+internal fun Engine.writeWebSocketHooks(
+    app: App,
+    dir: Path,
+) {
+    val file = dir.resolve(WEBSOCKET_HOOKS_FILE)
+    if (app.service(GATEWAY) == null) {
+        Files.deleteIfExists(file)
+        return
+    }
+    val config = parseGatewayConfig(configText(dir))
+    val upstream = (config.upstream ?: serviceOptions(app, GATEWAY).getValue("upstream")).trimEnd('/')
+    val host = runCatching { URI(upstream).host }.getOrNull()
+    val reachable = host?.let { upstream.replaceFirst(it, containerHost(it)) } ?: upstream
+
+    fun resolve(url: String?) = url?.replace("{{upstream}}", reachable)
+    val ws = config.websocket
+    val hooks =
+        WebSocketHooks(
+            resolve(ws.connect),
+            resolve(ws.disconnect),
+            ws.routeSelection,
+            ws.routes.mapValues { (_, url) ->
+                resolve(url)!!
+            },
+        )
+    val text = hooksJson.encodeToString(WebSocketHooks.serializer(), hooks) + "\n"
+    Files.createDirectories(file.parent)
+    if (!Files.exists(file) || Files.readString(file) != text) writeAtomically(file, text)
+}
+
+private val hooksJson =
+    Json {
+        prettyPrint = true
+        encodeDefaults = true
+    }
 
 /** Replaces [file] with [text], readable and writable by the owner only from the moment it exists. */
 internal fun writeOwnerOnly(
