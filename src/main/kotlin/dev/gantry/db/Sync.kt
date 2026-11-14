@@ -4,8 +4,10 @@ import dev.gantry.dblog.GANTRY_CLIENT
 import dev.gantry.engine.Docker
 import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
+import dev.gantry.engine.SYNC_LIMIT
 import dev.gantry.engine.SourceSettings
 import dev.gantry.engine.checkSourceHost
+import dev.gantry.engine.runFlags
 import kotlinx.serialization.Serializable
 import java.net.ConnectException
 import java.net.NoRouteToHostException
@@ -340,7 +342,8 @@ class Sync(
 
             // Built before clearing: it rejects unsafe database names while local data is still intact.
             val container = "gantry-sync-$app-$id"
-            val args = listOf("--name=$container") + copyScript(dialect, source, target, "gantry-${app}_default", image)
+            val args =
+                listOf("--name=$container") + SYNC_LIMIT.runFlags() + copyScript(dialect, source, target, "gantry-${app}_default", image)
             // A copy left running by a killed gantry would keep writing into the database this one is about to clear.
             containers.remove(container)
 
@@ -401,7 +404,9 @@ class Sync(
         val app = run.job.app
         val id = run.job.service
         val container = "gantry-sync-$app-$id"
-        val args = listOf("--name=$container") + tableCopyScript(target.dialect, source, target, tables, "gantry-${app}_default", image)
+        val args =
+            listOf("--name=$container") + SYNC_LIMIT.runFlags() +
+                tableCopyScript(target.dialect, source, target, tables, "gantry-${app}_default", image)
         containers.remove(container)
         run.phase("copying tables")
         val copied = linkedMapOf<String, String>()

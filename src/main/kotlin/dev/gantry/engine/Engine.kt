@@ -466,7 +466,7 @@ class Engine(
                 }
             val fragment =
                 withConfigHash(
-                    Template.render(services, context, yamlEscape = true).trimEnd('\n') + "\n",
+                    withResourceLimits(Template.render(services, context, yamlEscape = true).trimEnd('\n') + "\n", context),
                     rendered,
                 )
             fragments += fragment
