@@ -399,11 +399,11 @@ logins or asks an authorizer you write, and a WebSocket relay.
 ```bash
 gantry add my-app --service gateway --set upstream=http://localhost:8080   # your app's base URL, no path
 gantry start my-app
-curl localhost:8090/health                                                 # GATEWAY_URL, proxied to the upstream
+curl localhost:7090/health                                                 # GATEWAY_URL, proxied to the upstream
 ```
 
 REST and WebSocket share the port: a request with `Upgrade: websocket`, on any path, is a WebSocket connection
-(`GATEWAY_WS_URL`, `ws://localhost:8090`); everything else is REST. Like an AWS API Gateway, the backend decides what
+(`GATEWAY_WS_URL`, `ws://localhost:7090`); everything else is REST. Like an AWS API Gateway, the backend decides what
 to push and the frontend what to listen to; see [WebSocket](#websocket).
 
 Out of the box the gateway is a **transparent proxy**: every request goes to `upstream` and nobody is asked to log
@@ -606,7 +606,7 @@ authorizers:
   fb-ws:
     type: firebase
     projectId: my-firebase-project
-    tokenFrom: query:token          # browsers can't set headers on a handshake: ws://localhost:8090?token=<id token>
+    tokenFrom: query:token          # browsers can't set headers on a handshake: ws://localhost:7090?token=<id token>
 
 websocket:
   auth: fb-ws                       # the $connect authorizer: public (the default), deny, or an authorizer

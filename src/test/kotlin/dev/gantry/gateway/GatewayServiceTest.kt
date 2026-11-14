@@ -92,7 +92,7 @@ class GatewayServiceTest {
                 .service("gateway")!!
                 .ports
                 .getValue("main")
-        assertTrue(port >= 8090)
+        assertTrue(port >= 7090)
         assertContains(compose, "\"127.0.0.1:$port:9080\"")
         assertContains(compose, "\"$dir/config.yaml:/usr/local/apisix/conf/config.yaml")
         assertContains(compose, "\"$dir/apisix.yaml:/usr/local/apisix/conf/apisix.yaml")
