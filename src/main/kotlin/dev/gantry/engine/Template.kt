@@ -157,16 +157,19 @@ private fun keySchema(
     range: KeySpec?,
 ): List<Pair<String, String>> = listOfNotNull(hash.name to "HASH", range?.let { it.name to "RANGE" })
 
+/** The image's entrypoint is `java`: the heap is sized from the container's memory ceiling, which in memory holds the data. */
+private const val DYNAMODB_HEAP = "\"-XX:MaxRAMPercentage=75.0\""
+
 /** In memory unless persist=true, then a named volume; one database whatever the caller's credentials or region. */
 private fun dynamodbStorage(context: Context): List<String> =
     if (context.getValue("opt.persist") == "true") {
         listOf(
-            "    command: [\"-jar\", \"DynamoDBLocal.jar\", \"-sharedDb\", \"-dbPath\", \"/home/dynamodblocal/data\"]",
+            "    command: [$DYNAMODB_HEAP, \"-jar\", \"DynamoDBLocal.jar\", \"-sharedDb\", \"-dbPath\", \"/home/dynamodblocal/data\"]",
             "    volumes:",
             "      - dynamodb-data:/home/dynamodblocal/data",
         )
     } else {
-        listOf("    command: [\"-jar\", \"DynamoDBLocal.jar\", \"-sharedDb\", \"-inMemory\"]")
+        listOf("    command: [$DYNAMODB_HEAP, \"-jar\", \"DynamoDBLocal.jar\", \"-sharedDb\", \"-inMemory\"]")
     }
 
 /** A key attribute and its DynamoDB type: `S`, `N` or `B`. */

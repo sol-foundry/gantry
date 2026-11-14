@@ -25,6 +25,8 @@
     container_name: "{{app}}-gantry-auth"
     command:
       - java
+      - -XX:MaxRAMPercentage=75.0
+      - -XX:+ExitOnOutOfMemoryError
       - -cp
       - "/gantry/lib/*"
       - dev.gantry.auth.AuthServerKt
