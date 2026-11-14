@@ -152,7 +152,7 @@ class AuthorizersTest {
 
         val text = compose
         listOf("alpha", "beta").forEach { name ->
-            assertContains(text, "  auth-$name:\n    image: \"gantry-shop-auth-$name:latest\"\n")
+            assertContains(text, "  auth-$name:\n    cpus: 1\n    mem_limit: 512m\n    image: \"gantry-shop-auth-$name:latest\"\n")
             assertContains(text, "container_name: \"shop-auth-$name\"\n    pull_policy: never\n")
             assertContains(text, "env_file:\n      - \"$appDir/auth-$name.env\"")
         }
