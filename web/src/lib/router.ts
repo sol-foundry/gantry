@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 /** Explorer pages, keyed by the route segment the catalog's `ui` builtin names. */
-export type Tool = "postgres" | "mysql" | "queue";
+export type Tool = "postgres" | "mysql" | "queue" | "gateway";
 
 export type Route =
   | { page: "home" }
@@ -11,7 +11,7 @@ export type Route =
   | { page: "services" }
   | { page: "service"; service: string };
 
-const TOOLS: Tool[] = ["postgres", "mysql", "queue"];
+const TOOLS: Tool[] = ["postgres", "mysql", "queue", "gateway"];
 
 /** Hash routes keep the dashboard a single static page the Kotlin server can serve for any path. */
 export function parseRoute(hash: string): Route {

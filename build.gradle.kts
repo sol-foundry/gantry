@@ -19,6 +19,14 @@ repositories {
     mavenCentral()
 }
 
+// Compile against the versions the app runs with. This also gives libraries declared without a version (the YAML
+// parser kaml is built on) exactly the version kaml brings, so it can never drift from kaml's.
+java {
+    consistentResolution {
+        useRuntimeClasspathVersions()
+    }
+}
+
 kotlin {
     jvmToolchain(17)
 }
@@ -31,6 +39,9 @@ dependencies {
     implementation(libs.ktor.server.status.pages)
     implementation(libs.ktor.serialization.json)
     implementation(libs.serialization.json)
+    implementation(libs.kaml)
+    implementation(libs.snakeyaml.engine)
+    implementation(libs.nimbus.jose.jwt)
     implementation(libs.postgres)
     implementation(libs.mysql)
     implementation(libs.flyway.core)
@@ -61,6 +72,11 @@ application {
 
 tasks.test {
     useJUnitPlatform()
+    // GANTRY_E2E=1 runs the opt-in tests against real Docker. The gateway one runs gantry-auth from the installed
+    // jars, so install first; the variable is an input so switching it never leaves the run up to date.
+    val e2e = System.getenv("GANTRY_E2E").orEmpty()
+    inputs.property("gantryE2e", e2e)
+    if (e2e == "1") dependsOn(tasks.installDist)
 }
 
 tasks.jar {

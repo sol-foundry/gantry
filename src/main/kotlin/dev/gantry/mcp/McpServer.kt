@@ -2,7 +2,11 @@ package dev.gantry.mcp
 
 import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
+import dev.gantry.gateway.Call
+import dev.gantry.gateway.GATEWAY
+import dev.gantry.gateway.callLog
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -12,6 +16,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import java.io.BufferedReader
@@ -21,6 +26,10 @@ import java.io.Writer
 private val SUPPORTED_VERSIONS = listOf("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
 private const val TOOL = "get_connection_details"
+private const val CALLS_TOOL = "get_gateway_calls"
+private const val CALLS_DEFAULT = 20
+private const val CALLS_MAX = 100
+private const val BODY_BYTES = 4096
 
 private const val PARSE_ERROR = -32700
 private const val INVALID_REQUEST = -32600
@@ -69,10 +78,14 @@ class McpServer(
             when (message.text("method")) {
                 "initialize" -> result(id, initialize(params))
                 "ping" -> result(id, JsonObject(emptyMap()))
-                "tools/list" -> result(id, buildJsonObject { put("tools", buildJsonArray { add(toolDefinition()) }) })
+                "tools/list" -> result(id, buildJsonObject { put("tools", buildJsonArray { tools().forEach { add(it) } }) })
                 "tools/call" -> {
                     val name = params.text("name")
-                    if (name == TOOL) result(id, callTool()) else error(id, INVALID_PARAMS, "Unknown tool: $name")
+                    when {
+                        name == TOOL -> result(id, callTool())
+                        name == CALLS_TOOL && hasGateway() -> result(id, callGatewayCalls(params["arguments"] as? JsonObject))
+                        else -> error(id, INVALID_PARAMS, "Unknown tool: $name")
+                    }
                 }
                 else -> error(id, METHOD_NOT_FOUND, "Method not found")
             }
@@ -99,6 +112,78 @@ class McpServer(
                     "databases, queues, cache and other services, then connect with your own tools (psql, mysql, aws, redis-cli, ...).",
             )
         }
+    }
+
+    /** Whether the app has a gateway service, read fresh each time since services come and go. */
+    private fun hasGateway(): Boolean =
+        try {
+            engine.readApp(app).service(GATEWAY) != null
+        } catch (_: GantryException) {
+            false
+        } catch (_: SerializationException) {
+            false
+        }
+
+    private fun tools() = listOfNotNull(toolDefinition(), if (hasGateway()) gatewayCallsDefinition() else null)
+
+    private fun gatewayCallsDefinition() =
+        buildJsonObject {
+            put("name", CALLS_TOOL)
+            put(
+                "description",
+                "The newest calls through the REST API gateway of Gantry app '$app', newest first, with request and response " +
+                    "headers and bodies and the auth decision for each. Secrets in headers are redacted, and bodies are cut " +
+                    "to 4 KB each (truncated is then true). Filter with status (a class like 4xx, or a code like 404) and " +
+                    "path (a glob such as /users/**, matched without the query string).",
+            )
+            putJsonObject("inputSchema") {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("limit") {
+                        put("type", "integer")
+                        put("description", "How many calls to return (default $CALLS_DEFAULT, at most $CALLS_MAX).")
+                    }
+                    putJsonObject("status") {
+                        put("type", "string")
+                        put("description", "Only calls with this status: a class such as 4xx or an exact code such as 404.")
+                    }
+                    putJsonObject("path") {
+                        put("type", "string")
+                        put("description", "Only calls whose path matches this glob, e.g. /users/** (* is one path segment).")
+                    }
+                }
+            }
+            putJsonObject("annotations") { put("readOnlyHint", true) }
+        }
+
+    private fun callGatewayCalls(arguments: JsonObject?): JsonObject =
+        try {
+            val limit = ((arguments?.get("limit") as? JsonPrimitive)?.intOrNull ?: CALLS_DEFAULT).coerceIn(1, CALLS_MAX)
+            val status = arguments?.text("status")?.ifBlank { null }
+            val path = arguments?.text("path")?.ifBlank { null }
+            val calls = engine.callLog(app).recent(limit, status, path).map { it.cutBodies() }
+            buildJsonObject { put("content", buildJsonArray { add(textContent(Json.encodeToString(calls))) }) }
+        } catch (e: GantryException) {
+            toolError(e.message ?: "error")
+        }
+
+    /** Bodies are cut again for agents, so a few large calls do not flood their context. */
+    private fun Call.cutBodies(): Call {
+        val request = requestBody?.cutTo(BODY_BYTES)
+        val response = responseBody?.cutTo(BODY_BYTES)
+        return copy(
+            requestBody = request?.first,
+            responseBody = response?.first,
+            truncated = truncated || request?.second == true || response?.second == true,
+        )
+    }
+
+    private fun String.cutTo(max: Int): Pair<String, Boolean> {
+        val bytes = toByteArray(Charsets.UTF_8)
+        if (bytes.size <= max) return this to false
+        var end = max
+        while (end > 0 && (bytes[end].toInt() and 0xC0) == 0x80) end--
+        return String(bytes, 0, end, Charsets.UTF_8) to true
     }
 
     private fun toolDefinition() =

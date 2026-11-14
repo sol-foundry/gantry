@@ -26,6 +26,7 @@ import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
 import dev.gantry.engine.Presets
 import dev.gantry.engine.SourceSettings
+import dev.gantry.gateway.GATEWAY
 import dev.gantry.server.startDashboard
 import dev.gantry.share.ExportedPath
 import dev.gantry.share.Exporter
@@ -61,6 +62,9 @@ fun main(args: Array<String>) {
                 Export(engine),
                 Import(engine),
                 SyncCommand(engine),
+                GatewayCommand(engine),
+                AuthorizerCommand(engine),
+                SecretCommand(engine),
                 Mcp(engine),
                 Dashboard(engine),
             ).main(args)
@@ -113,14 +117,14 @@ private class ListApps(
 internal class Create(
     private val engine: Engine,
 ) : CliktCommand(name = "create") {
-    override fun help(context: Context) = "Create an app and optionally add services (database, cache, queue, ...)."
+    override fun help(context: Context) = "Create an app and optionally add services (postgres, valkey, elasticmq, ...)."
 
     private val app by argument()
     private val services by option(
         "--services",
         "-s",
         metavar = "SERVICE...",
-        help = "Services to add, e.g. --services database cache queue (see `gantry services`).",
+        help = "Services to add, e.g. --services postgres valkey elasticmq (see `gantry services`).",
     ).varargValues().default(emptyList())
 
     // Services listed without the flag, as earlier versions took them; kept so existing scripts keep working.
@@ -352,8 +356,9 @@ private class Export(
     }
 }
 
-private class Import(
+internal class Import(
     private val engine: Engine,
+    private val importer: Importer = Importer(engine),
 ) : CliktCommand(name = "import") {
     override fun help(context: Context) = "Create (or replace) an app from an exported file, after showing what will happen."
 
@@ -370,7 +375,6 @@ private class Import(
 
     override fun run() {
         val exported = parseExportFile(Files.readString(Path.of(file)))
-        val importer = Importer(engine)
         val preview = importer.preview(exported, asName)
         val request =
             applyOverrides(
@@ -387,10 +391,20 @@ private class Import(
             System.err.print("${if (preview.exists) "replace" else "create"} '${request.app}'? [y/N] ")
             if (readlnOrNull()?.trim()?.lowercase()?.startsWith("y") != true) throw GantryException("aborted")
         }
-        val app = importer.apply(request)
+        val imported = importer.importApp(request)
+        val app = imported.app
         echo("imported '${app.name}' (${app.services.size} services); next: gantry start ${app.name} && gantry env ${app.name}")
+        imported.gateway?.let { applied ->
+            applied.recorded.forEach { echo("authorizer $it: using the image already built on this machine") }
+            applied.toPush.forEach { (name, dir) ->
+                echo("authorizer $name is not built on this machine; run: gantry authorizer push ${app.name} $name $dir")
+            }
+            applied.unsetSecrets.forEach { echo("secret $it is not set; run: gantry secret set ${app.name} $it") }
+        }
         if (request.services.values.any { it.source?.complete() == true }) echo("next: gantry sync ${app.name}")
     }
+
+    private fun isGateway(service: String) = runCatching { engine.catalog.resolve(service).id }.getOrNull() == GATEWAY
 
     private fun printPreview(
         request: ImportRequest,
@@ -416,6 +430,10 @@ private class Import(
             imported.source?.let { echo("    source: ${it.user}@${it.host}:${it.port}/${it.database}") }
         }
         request.envNames.forEach { (key, name) -> echo("  env $key -> ${name.ifEmpty { "(omitted)" }}") }
+        request.gateway?.takeIf { request.services.keys.any { isGateway(it) } }?.let { gateway ->
+            echo("  gateway.yml from the file")
+            gateway.authorizers.forEach { echo("  authorizer ${it.name} (${listOfNotNull(it.dir.repo, it.dir.path).joinToString(": ")})") }
+        }
         warnings.forEach { echo("warning: $it") }
     }
 }

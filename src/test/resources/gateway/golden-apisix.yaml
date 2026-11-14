@@ -1,0 +1,328 @@
+"routes":
+  - "id": "portal"
+    "uri": "/*"
+    "methods":
+      - "GET"
+      - "POST"
+    "priority": 5
+    "enable_websocket": true
+    "vars":
+      - ["uri", "~~", "^(?!.*(?:^|/)(?:\\.|%2[eE]){2}(?:/|$))\\Q/\\E\\Qp\\E\\Qo\\E\\Qr\\E\\Qt\\E\\Qa\\E\\Ql\\E(?:/.*)?$"]
+    "upstream":
+      "type": "roundrobin"
+      "scheme": "http"
+      "pass_host": "node"
+      "nodes":
+        "host.docker.internal:8080": 1
+    "timeout":
+      "connect": 6
+      "send": 3600
+      "read": 3600
+    "plugins":
+      "request-id":
+        "header_name": "X-Request-Id"
+      "proxy-rewrite":
+        "headers":
+          "remove":
+            - "x-user-id"
+            - "x-gateway-user-email"
+            - "x-internal-api-key"
+            - "x-tenant"
+        "regex_uri":
+          - "^(.*)$"
+          - "/app$1"
+      "forward-auth":
+        "uri": "http://gantry-auth:9100/authorize?route=portal"
+        "request_method": "POST"
+        "request_headers":
+          - "Authorization"
+          - "Cookie"
+          - "X-Request-Id"
+          - "X-Forwarded-Host"
+          - "X-User-Timezone"
+        "upstream_headers":
+          - "x-user-id"
+          - "X-Gateway-User-Email"
+          - "x-internal-api-key"
+          - "x-tenant"
+        "client_headers":
+          - "WWW-Authenticate"
+        "timeout": 10000
+        "status_on_error": 503
+      "cors":
+        "allow_origins": "http://localhost:3000"
+        "allow_credential": true
+        "allow_methods": "**"
+        "allow_headers": "**"
+        "expose_headers": "x-request-id"
+        "max_age": 600
+      "file-logger":
+        "path": "/gantry-log/calls.log"
+        "include_req_body": true
+        "include_resp_body": true
+  - "id": "admin"
+    "uri": "/*"
+    "hosts":
+      - "admin.example.com"
+    "priority": 4
+    "enable_websocket": true
+    "vars":
+      - ["uri", "~~", "^(?!.*(?:^|/)(?:\\.|%2[eE]){2}(?:/|$))\\Q/\\E\\Qa\\E\\Qd\\E\\Qm\\E\\Qi\\E\\Qn\\E\\Q/\\E[^/]+$"]
+    "upstream":
+      "type": "roundrobin"
+      "scheme": "http"
+      "pass_host": "node"
+      "nodes":
+        "host.docker.internal:8080": 1
+    "timeout":
+      "connect": 6
+      "send": 3600
+      "read": 3600
+    "plugins":
+      "request-id":
+        "header_name": "X-Request-Id"
+      "proxy-rewrite":
+        "headers":
+          "remove":
+            - "x-user-id"
+            - "x-gateway-user-email"
+            - "x-internal-api-key"
+            - "x-tenant"
+        "regex_uri":
+          - "^/admin(?:/(.*))?$"
+          - "/$1"
+      "forward-auth":
+        "uri": "http://gantry-auth:9100/authorize?route=admin"
+        "request_method": "POST"
+        "request_headers":
+          - "Authorization"
+          - "Cookie"
+          - "X-Request-Id"
+          - "X-Forwarded-Host"
+          - "X-User-Timezone"
+        "upstream_headers":
+          - "x-user-id"
+          - "x-gateway-user-email"
+          - "x-internal-api-key"
+          - "x-tenant"
+        "client_headers":
+          - "WWW-Authenticate"
+        "timeout": 10000
+        "status_on_error": 503
+      "cors":
+        "allow_origins": "http://localhost:3000"
+        "allow_credential": true
+        "allow_methods": "**"
+        "allow_headers": "**"
+        "expose_headers": "x-request-id"
+        "max_age": 600
+      "file-logger":
+        "path": "/gantry-log/calls.log"
+        "include_req_body": true
+        "include_resp_body": true
+  - "id": "hook"
+    "uri": "/*"
+    "priority": 3
+    "enable_websocket": true
+    "vars":
+      - ["uri", "~~", "^(?!.*(?:^|/)(?:\\.|%2[eE]){2}(?:/|$))\\Q/\\E\\Qh\\E\\Qo\\E\\Qo\\E\\Qk\\E$"]
+    "upstream":
+      "type": "roundrobin"
+      "scheme": "http"
+      "pass_host": "node"
+      "nodes":
+        "host.docker.internal:9000": 1
+    "timeout":
+      "connect": 6
+      "send": 3600
+      "read": 3600
+    "plugins":
+      "request-id":
+        "header_name": "X-Request-Id"
+      "proxy-rewrite":
+        "headers":
+          "remove":
+            - "x-user-id"
+            - "x-gateway-user-email"
+            - "x-internal-api-key"
+            - "x-tenant"
+      "forward-auth":
+        "uri": "http://host.docker.internal:9300/check"
+        "request_method": "POST"
+        "request_headers":
+          - "Authorization"
+          - "Cookie"
+          - "X-Request-Id"
+          - "X-Forwarded-Host"
+          - "X-User-Timezone"
+        "upstream_headers":
+          - "x-user-id"
+          - "x-gateway-user-email"
+          - "x-internal-api-key"
+          - "x-tenant"
+        "client_headers":
+          - "WWW-Authenticate"
+        "timeout": 10000
+        "status_on_error": 503
+      "cors":
+        "allow_origins": "http://localhost:3000"
+        "allow_credential": true
+        "allow_methods": "**"
+        "allow_headers": "**"
+        "expose_headers": "x-request-id"
+        "max_age": 600
+      "file-logger":
+        "path": "/gantry-log/calls.log"
+        "include_req_body": true
+        "include_resp_body": true
+  - "id": "health"
+    "uri": "/*"
+    "priority": 2
+    "enable_websocket": true
+    "vars":
+      - ["uri", "~~", "^(?!.*(?:^|/)(?:\\.|%2[eE]){2}(?:/|$))\\Q/\\E\\Qa\\E\\Qc\\E\\Qt\\E\\Qu\\E\\Qa\\E\\Qt\\E\\Qo\\E\\Qr\\E(?:/.*)?$"]
+    "upstream":
+      "type": "roundrobin"
+      "scheme": "http"
+      "pass_host": "node"
+      "nodes":
+        "host.docker.internal:8080": 1
+    "timeout":
+      "connect": 6
+      "send": 3600
+      "read": 3600
+    "plugins":
+      "request-id":
+        "header_name": "X-Request-Id"
+      "proxy-rewrite":
+        "headers":
+          "set":
+            "x-source": "gateway"
+            "x-user-id": ""
+          "remove":
+            - "x-gateway-user-email"
+            - "x-internal-api-key"
+            - "x-tenant"
+      "cors":
+        "allow_origins": "http://localhost:3000"
+        "allow_credential": true
+        "allow_methods": "**"
+        "allow_headers": "**"
+        "expose_headers": "x-request-id"
+        "max_age": 600
+      "file-logger":
+        "path": "/gantry-log/calls.log"
+        "include_req_body": true
+        "include_resp_body": true
+  - "id": "blocked"
+    "uri": "/*"
+    "priority": 1
+    "enable_websocket": true
+    "vars":
+      - ["uri", "~~", "^(?!.*(?:^|/)(?:\\.|%2[eE]){2}(?:/|$))\\Q/\\E\\Qp\\E\\Qr\\E\\Qi\\E\\Qv\\E\\Qa\\E\\Qt\\E\\Qe\\E(?:/.*)?$"]
+    "upstream":
+      "type": "roundrobin"
+      "scheme": "http"
+      "pass_host": "node"
+      "nodes":
+        "host.docker.internal:8080": 1
+    "timeout":
+      "connect": 6
+      "send": 3600
+      "read": 3600
+    "plugins":
+      "request-id":
+        "header_name": "X-Request-Id"
+      "proxy-rewrite":
+        "headers":
+          "remove":
+            - "x-user-id"
+            - "x-gateway-user-email"
+            - "x-internal-api-key"
+            - "x-tenant"
+        "regex_uri":
+          - "^.*$"
+          - "/nope"
+      "forward-auth":
+        "uri": "http://gantry-auth:9100/authorize?route=blocked"
+        "request_method": "POST"
+        "request_headers":
+          - "Authorization"
+          - "Cookie"
+          - "X-Request-Id"
+          - "X-Forwarded-Host"
+          - "X-User-Timezone"
+        "upstream_headers":
+          - "x-user-id"
+          - "x-gateway-user-email"
+          - "x-internal-api-key"
+          - "x-tenant"
+        "client_headers":
+          - "WWW-Authenticate"
+        "timeout": 10000
+        "status_on_error": 503
+      "cors":
+        "allow_origins": "http://localhost:3000"
+        "allow_credential": true
+        "allow_methods": "**"
+        "allow_headers": "**"
+        "expose_headers": "x-request-id"
+        "max_age": 600
+      "file-logger":
+        "path": "/gantry-log/calls.log"
+        "include_req_body": true
+        "include_resp_body": true
+  - "id": "default"
+    "uri": "/*"
+    "priority": 0
+    "enable_websocket": true
+    "upstream":
+      "type": "roundrobin"
+      "scheme": "http"
+      "pass_host": "node"
+      "nodes":
+        "host.docker.internal:8080": 1
+    "timeout":
+      "connect": 6
+      "send": 3600
+      "read": 3600
+    "plugins":
+      "request-id":
+        "header_name": "X-Request-Id"
+      "proxy-rewrite":
+        "headers":
+          "remove":
+            - "x-user-id"
+            - "x-gateway-user-email"
+            - "x-internal-api-key"
+            - "x-tenant"
+      "forward-auth":
+        "uri": "http://gantry-auth:9100/authorize?route=default"
+        "request_method": "POST"
+        "request_headers":
+          - "Authorization"
+          - "Cookie"
+          - "X-Request-Id"
+          - "X-Forwarded-Host"
+          - "X-User-Timezone"
+        "upstream_headers":
+          - "x-user-id"
+          - "x-gateway-user-email"
+          - "x-internal-api-key"
+          - "x-tenant"
+        "client_headers":
+          - "WWW-Authenticate"
+        "timeout": 10000
+        "status_on_error": 503
+      "cors":
+        "allow_origins": "http://localhost:3000"
+        "allow_credential": true
+        "allow_methods": "**"
+        "allow_headers": "**"
+        "expose_headers": "x-request-id"
+        "max_age": 600
+      "file-logger":
+        "path": "/gantry-log/calls.log"
+        "include_req_body": true
+        "include_resp_body": true
+#END

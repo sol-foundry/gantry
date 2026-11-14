@@ -7,6 +7,8 @@ postgres = "42.7.8"
 mysql = "26.10.0"
 flyway = "13.12.0"
 ktlint = "14.2.0"
+kaml = "0.104.0"
+nimbus-jose-jwt = "10.10"
 
 [libraries]
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
@@ -17,6 +19,10 @@ ktor-serialization-json = { module = "io.ktor:ktor-serialization-kotlinx-json", 
 ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
 clikt = { module = "com.github.ajalt.clikt:clikt", version.ref = "clikt" }
 serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+kaml = { module = "com.charleskorn.kaml:kaml", version.ref = "kaml" }
+# The YAML parser kaml is built on, used directly to find comments. No version: it is always the one kaml brings.
+snakeyaml-engine = { module = "it.krzeminski:snakeyaml-engine-kmp" }
+nimbus-jose-jwt = { module = "com.nimbusds:nimbus-jose-jwt", version.ref = "nimbus-jose-jwt" }
 postgres = { module = "org.postgresql:postgresql", version.ref = "postgres" }
 mysql = { module = "com.mysql:mysql-connector-j", version.ref = "mysql" }
 flyway-core = { module = "org.flywaydb:flyway-core", version.ref = "flyway" }

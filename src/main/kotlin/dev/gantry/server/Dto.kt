@@ -1,6 +1,7 @@
 package dev.gantry.server
 
 import dev.gantry.engine.OptionMeta
+import dev.gantry.gateway.GatewayConfig
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -120,4 +121,24 @@ data class ScriptResponse(
 data class NewMigrationRequest(
     val description: String,
     val sql: String,
+)
+
+/** The text of an app's `gateway.yml`. */
+@Serializable
+data class GatewayConfigText(
+    val text: String,
+)
+
+/** `gateway.yml` as the form edits it; [comments] says the file has `#` lines that saving from the form drops. */
+@Serializable
+data class GatewayConfigForm(
+    val config: GatewayConfig,
+    val comments: Boolean = false,
+)
+
+/** A `gateway.yml` that was not saved, with everything wrong in it. */
+@Serializable
+data class ConfigProblems(
+    val error: String,
+    val problems: List<String>,
 )
