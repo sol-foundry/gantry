@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useLoad } from "@/hooks";
@@ -216,9 +217,9 @@ function QueryDetail({ app, service, listed, onClose }: { app: string; service: 
     : undefined;
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
+      <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-5xl">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 font-mono text-sm">
+          <DialogTitle className="flex flex-wrap items-center gap-2 font-mono text-sm">
             {q.command && <span>{q.command}</span>}
             <span className={cn("font-medium", o.tone)}>{o.text}</span>
             {q.truncated && <Badge variant="outline">truncated</Badge>}
@@ -228,61 +229,80 @@ function QueryDetail({ app, service, listed, onClose }: { app: string; service: 
           </DialogDescription>
         </DialogHeader>
 
-        {full.data?.replaySql !== undefined && full.data.params.length > 0 && (
-          <section className="flex min-w-0 flex-col gap-2">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="font-heading text-sm font-medium">Replayable SQL</h3>
-              <CopyButton text={full.data.replaySql} />
-            </div>
-            <CodeBlock className="max-h-64">{full.data.replaySql}</CodeBlock>
-            {full.data.replayComplete === false && (
-              <p className="text-xs text-amber-600 dark:text-amber-400">
-                Some values were cut or are missing, so this SQL may not run exactly as logged.
-              </p>
+        <Tabs defaultValue="request" className="min-h-0 flex-1">
+          <TabsList variant="line">
+            <TabsTrigger value="request">Request</TabsTrigger>
+            <TabsTrigger value="result">
+              Result
+              {q.error && <span className="size-1.5 rounded-full bg-destructive" role="img" aria-label="error" />}
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="request" className="flex min-h-0 flex-col gap-4 overflow-y-auto">
+            {full.data?.replaySql !== undefined && full.data.params.length > 0 && (
+              <section className="flex min-w-0 flex-col gap-2">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="font-heading text-sm font-medium">Replayable SQL</h3>
+                  <CopyButton text={full.data.replaySql} />
+                </div>
+                <CodeBlock className="max-h-64">{full.data.replaySql}</CodeBlock>
+                {full.data.replayComplete === false && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    Some values were cut or are missing, so this SQL may not run exactly as logged.
+                  </p>
+                )}
+              </section>
             )}
-          </section>
-        )}
 
-        <section className="flex min-w-0 flex-col gap-2">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="font-heading text-sm font-medium">SQL</h3>
-            <CopyButton text={q.sql} />
-          </div>
-          <CodeBlock className="max-h-64">{q.sql}</CodeBlock>
-        </section>
+            <section className="flex min-w-0 flex-col gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-heading text-sm font-medium">SQL</h3>
+                <CopyButton text={q.sql} />
+              </div>
+              <CodeBlock className="max-h-64">{q.sql}</CodeBlock>
+            </section>
 
-        {q.error && <ErrorAlert title={`Error ${q.error.code}`} message={q.error.message} />}
+            <section className="flex min-w-0 flex-col gap-2">
+              <h3 className="font-heading text-sm font-medium">Parameters</h3>
+              {q.params.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No parameters.</p>
+              ) : (
+                <div className="max-h-48 overflow-auto rounded-lg border">
+                  <Table>
+                    <TableBody>
+                      {q.params.map((p, i) => (
+                        <TableRow key={i}>
+                          <TableCell className="w-12 align-top font-mono text-xs text-muted-foreground">${i + 1}</TableCell>
+                          <TableCell className={cn("font-mono text-xs break-all whitespace-normal", p === null && "text-muted-foreground italic")}>
+                            {p === null ? "NULL" : p}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </section>
+          </TabsContent>
 
-        <section className="flex min-w-0 flex-col gap-2">
-          <h3 className="font-heading text-sm font-medium">Parameters</h3>
-          {q.params.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No parameters.</p>
-          ) : (
-            <div className="max-h-48 overflow-auto rounded-lg border">
-              <Table>
-                <TableBody>
-                  {q.params.map((p, i) => (
-                    <TableRow key={i}>
-                      <TableCell className="w-12 align-top font-mono text-xs text-muted-foreground">${i + 1}</TableCell>
-                      <TableCell className={cn("font-mono text-xs break-all whitespace-normal", p === null && "text-muted-foreground italic")}>
-                        {p === null ? "NULL" : p}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </section>
-
-        {full.error && <ErrorAlert title="Could not load the result rows" message={full.error} />}
-        {!full.data && !full.error && q.rowCount !== null && <Skeleton className="h-32" />}
-        {result && (
-          <section className="flex min-w-0 flex-col gap-2">
-            <h3 className="font-heading text-sm font-medium">Results</h3>
-            <DataGrid result={result} />
-          </section>
-        )}
+          <TabsContent value="result" className="flex min-h-0 flex-col gap-4 overflow-y-auto">
+            {q.error && <ErrorAlert title={`Error ${q.error.code}`} message={q.error.message} />}
+            {full.error && <ErrorAlert title="Could not load the result rows" message={full.error} />}
+            {!full.data && !full.error && q.rowCount !== null && <Skeleton className="h-32" />}
+            {result && (
+              <section className="flex min-w-0 flex-col gap-2">
+                <h3 className="font-heading text-sm font-medium">Results</h3>
+                <DataGrid result={result} />
+              </section>
+            )}
+            {!q.error && !result && q.affected !== null && (
+              <p className="text-sm text-muted-foreground">{number(q.affected)} rows affected.</p>
+            )}
+            {!q.error && !result && q.affected === null && q.rowCount === null && (
+              <p className="text-sm text-muted-foreground">No result rows.</p>
+            )}
+          </TabsContent>
+        </Tabs>
       </DialogContent>
     </Dialog>
   );
