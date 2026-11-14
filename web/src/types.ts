@@ -116,6 +116,8 @@ export interface DatabaseInfo {
   hasSchemas: boolean;
   schemas: string[];
   tables: TableSummary[];
+  /** Schemas of nothing but views over same-named tables in other schemas, such as a read-only access layer. */
+  mirrorSchemas: string[];
 }
 
 export interface ColumnInfo {
@@ -327,6 +329,34 @@ export interface SourceInfo {
   job: SyncJob | null;
 }
 
+/** An open WebSocket connection on the gateway; `userId` is its handshake's x-user-id header. */
+export interface SocketConnection {
+  connectionId: string;
+  userId: string | null;
+  since: string | null;
+  lastActiveAt: string | null;
+}
+
+/** One WebSocket event, newest first in a {@link SocketStatus}. */
+export interface SocketEvent {
+  time: string;
+  type: "connect" | "rejected" | "message" | "post" | "gone" | "disconnect" | "$disconnect" | string;
+  connectionId: string | null;
+  userId: string | null;
+  path: string | null;
+  status: number | null;
+  route: string | null;
+  bytes: number | null;
+  reason: string | null;
+}
+
+/** The gateway's WebSocket API; `running` is false when it does not answer. */
+export interface SocketStatus {
+  running: boolean;
+  connections: SocketConnection[];
+  events: SocketEvent[];
+}
+
 /** One call through the gateway, headers and bodies already redacted by the server. */
 export interface GatewayCall {
   id: string;
@@ -369,6 +399,18 @@ export interface GatewayConfig {
   cors: GatewayCors | null;
   stripHeaders: string[];
   log: GatewayLogSettings;
+  websocket: GatewayWebSocket;
+}
+
+/** WebSocket clients, like an API Gateway WebSocket API: `connect` (POST), `disconnect` (DELETE), message `routes`. */
+export interface GatewayWebSocket {
+  auth: string;
+  steps: string[];
+  headers: Record<string, string>;
+  connect: string | null;
+  disconnect: string | null;
+  routeSelection: string;
+  routes: Record<string, string>;
 }
 
 /** How a caller proves who they are; `type` is firebase, cognito, supabase, jwt or custom. */
@@ -463,4 +505,37 @@ export interface GatewayLogSettings {
 export interface GatewayConfigForm {
   config: GatewayConfig;
   comments: boolean;
+}
+
+export interface DbQueryError {
+  code: string;
+  message: string;
+}
+
+/** One statement a client ran through the query-log proxy. */
+export interface DbQuery {
+  id: string;
+  time: string;
+  durationMs: number;
+  service: string;
+  connectionId: number;
+  client: string | null;
+  sql: string;
+  params: (string | null)[];
+  columns: string[] | null;
+  rows: (string | null)[][] | null;
+  rowCount: number | null;
+  affected: number | null;
+  command: string | null;
+  error: DbQueryError | null;
+  /** Rows or a value were cut at the configured size. */
+  truncated: boolean;
+  /** Each parameter's type when known. */
+  paramTypes?: (string | null)[];
+  /** The SQL or a parameter was cut, a parameter is missing, or one is only hex of its wire encoding. */
+  inexact?: boolean;
+  /** Detail only: the SQL with its parameter values written in, ready to run. */
+  replaySql?: string;
+  /** Detail only: false when the replay is missing or has cut values. */
+  replayComplete?: boolean;
 }

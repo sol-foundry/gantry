@@ -18,12 +18,14 @@ import dev.gantry.gateway.Authorizers
 import dev.gantry.gateway.Call
 import dev.gantry.gateway.CallLog
 import dev.gantry.gateway.GATEWAY
+import dev.gantry.gateway.SocketEvent
 import dev.gantry.gateway.authorizersUsing
 import dev.gantry.gateway.callLog
 import dev.gantry.gateway.configText
 import dev.gantry.gateway.gatewayConfig
 import dev.gantry.gateway.saveGatewayConfig
 import dev.gantry.gateway.secretNames
+import dev.gantry.gateway.socketStatus
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
@@ -46,12 +48,15 @@ internal class GatewayCommand(
         subcommands(
             GatewayCalls(engine),
             GatewayClear(engine),
+            GatewaySockets(engine),
             GatewayConfigCommand(engine, authorizers),
             GatewayReload(engine, authorizers),
         )
     }
 
-    override fun help(context: Context) = "Inspect an app's REST API gateway: its recent calls and its gateway.yml, and apply a hand edit."
+    override fun help(context: Context) =
+        "Inspect an app's API gateway: its recent REST calls, its open WebSocket connections and their events, and " +
+            "its gateway.yml, and apply a hand edit."
 
     override fun run() = Unit
 }
@@ -108,6 +113,40 @@ private class GatewayClear(
         echo("Cleared the call log of '$app'")
     }
 }
+
+private class GatewaySockets(
+    private val engine: Engine,
+) : CliktCommand(name = "sockets") {
+    override fun help(context: Context) = "Show the gateway's open WebSocket connections and its recent socket events, oldest first."
+
+    private val app by argument()
+    private val limit by option("--limit", help = "How many events to show.").int().restrictTo(1..500).default(DEFAULT_CALLS)
+
+    override fun run() {
+        requireGateway(engine, app)
+        val status = engine.socketStatus(app)
+        if (!status.running) throw GantryException("the WebSocket relay of '$app' does not answer; run `gantry start $app`")
+        echo("${status.connections.size} open connection(s)")
+        status.connections.forEach { c -> echo("  ${c.connectionId}  user=${c.userId ?: "-"}  since=${c.since ?: "-"}") }
+        echo("")
+        echo("%-8s  %-10s  %s".format("TIME", "EVENT", "DETAIL"))
+        status.events.take(limit).asReversed().forEach { e ->
+            val time = runCatching { clock.format(Instant.parse(e.time)) }.getOrDefault(e.time)
+            echo("%-8s  %-10s  %s".format(time, e.type, socketDetail(e)))
+        }
+    }
+}
+
+private fun socketDetail(e: SocketEvent): String =
+    when (e.type) {
+        "post" -> "${e.connectionId}: ${e.bytes} bytes pushed"
+        "gone" -> "${e.connectionId}: push to a closed connection (410)"
+        "message" -> "${e.connectionId} -> ${e.route ?: "no route"} (${e.status})"
+        "rejected" -> "${e.connectionId} user=${e.userId ?: "-"}: \$connect answered ${e.status}"
+        "disconnect" -> "${e.connectionId} (${e.reason})"
+        "\$disconnect" -> "${e.connectionId}: \$disconnect answered ${e.status}"
+        else -> "${e.connectionId} user=${e.userId ?: "-"} ${e.path ?: ""}".trimEnd()
+    }
 
 /** Polls a call log for calls it has not returned before, oldest first; calls are told apart by id. */
 internal class CallFollower(

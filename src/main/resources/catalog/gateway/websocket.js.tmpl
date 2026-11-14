@@ -1,0 +1,387 @@
+'use strict';
+
+// The gateway's WebSocket half: a local AWS API Gateway WebSocket API, as a zero-dependency Node script on a stock
+// image (no npm install on `up`).
+//
+// :8080, reached only by APISIX once a handshake passed the gateway's `websocket` auth, on any path:
+//   $connect     the `connect` integration is POSTed the handshake's headers; a non-2xx answer refuses the socket
+//   messages     routed by `routeSelection` (default $request.body.action) to `routes`, else `$default`; with
+//                neither the client is told {"message": "Forbidden", ...}, as API Gateway does
+//   $disconnect  the `disconnect` integration is called with DELETE when the socket closes, for whatever reason
+// :8081, published on the host: the API Gateway Management API, for the app to push with any AWS SDK
+//   POST /@connections/{id}    sends the body to the client as is
+//   GET  /@connections/{id}    {connectedAt, identity: {sourceIp, userAgent}, lastActiveAt}
+//   DELETE /@connections/{id}  closes the connection
+//   A path prefix (a stage, like /v1) is ignored. Requests need an Authorization header (an SDK always signs); it is
+//   not checked, but a web page cannot send one without a CORS preflight, which is never granted.
+//   GET /connections, /events and /health are Gantry's own, for the CLI and the dashboard.
+// Integration URLs come from HOOKS_FILE, read per use so `gantry gateway reload` needs no restart; the connection id
+// is put in for its placeholder.
+
+const http = require('node:http');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+
+const PORT = 8080;
+const MANAGEMENT_PORT = 8081;
+const HOOKS_FILE = process.env.HOOKS_FILE ?? '';
+// Spelled out of parts: the file is a gantry template, where the joined form would be a placeholder.
+const CONNECTION_ID_PLACEHOLDER = '{' + '{connectionId}' + '}';
+const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+// API Gateway's WebSocket quotas.
+const MAX_FRAME_BYTES = 32 * 1024;
+const MAX_MESSAGE_BYTES = 128 * 1024;
+const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_CONNECTION_MS = 2 * 60 * 60 * 1000;
+const HOOK_TIMEOUT_MS = 29_000;
+const MAX_BUFFERED_BYTES = 8 << 20;
+const MAX_EVENTS = 500;
+// Hop-by-hop and handshake headers describe this socket, not the caller; everything else reaches the integrations.
+const UNFORWARDED = /^(host|connection|upgrade|keep-alive|te|trailer|transfer-encoding|content-length|proxy-.*|sec-websocket-.*)$/i;
+
+const byId = new Map(); // connectionId -> conn
+const events = [];
+
+function log(tag, message, data) {
+  const detail = data !== undefined ? ` ${JSON.stringify(data)}` : '';
+  console.log(`${new Date().toISOString()} [${tag}] ${message}${detail}`);
+}
+
+process.on('uncaughtException', (err) => log('ERROR', 'uncaught exception', { error: String(err?.stack ?? err) }));
+process.on('unhandledRejection', (err) => log('ERROR', 'unhandled rejection', { error: String(err?.stack ?? err) }));
+
+function hooks() {
+  try {
+    return HOOKS_FILE ? JSON.parse(fs.readFileSync(HOOKS_FILE, 'utf8')) : {};
+  } catch {
+    return {};
+  }
+}
+
+function record(type, conn, detail = {}) {
+  events.push({
+    time: new Date().toISOString(),
+    type,
+    connectionId: conn?.connectionId,
+    userId: conn?.headers['x-user-id'] || undefined,
+    ...detail,
+  });
+  if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS);
+}
+
+/** An id shaped like API Gateway's: 12 random bytes, base64, without '/' or '+' so it is safe in a path. */
+function newConnectionId() {
+  let id;
+  do id = crypto.randomBytes(12).toString('base64');
+  while (/[/+]/.test(id) || byId.has(id));
+  return id;
+}
+
+function frame(opcode, payload) {
+  const len = payload.length;
+  let header;
+  if (len < 126) {
+    header = Buffer.from([0x80 | opcode, len]);
+  } else if (len < 65536) {
+    header = Buffer.alloc(4);
+    header[0] = 0x80 | opcode;
+    header[1] = 126;
+    header.writeUInt16BE(len, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[0] = 0x80 | opcode;
+    header[1] = 127;
+    header.writeBigUInt64BE(BigInt(len), 2);
+  }
+  return Buffer.concat([header, payload]);
+}
+
+function send(conn, opcode, payload) {
+  if (!conn.open || conn.pending) return false;
+  if (conn.socket.writableLength > MAX_BUFFERED_BYTES) {
+    close(conn, 1008, 'too slow');
+    return false;
+  }
+  conn.socket.write(frame(opcode, payload));
+  return true;
+}
+
+function touch(conn) {
+  conn.lastActiveAt = new Date();
+  clearTimeout(conn.idleTimer);
+  conn.idleTimer = setTimeout(() => close(conn, 1001, 'idle timeout'), IDLE_TIMEOUT_MS);
+}
+
+/** Forgets [conn] and closes its socket, with [code] in a close frame unless the peer is gone; runs $disconnect. */
+function close(conn, code, reason = 'client') {
+  if (!conn.open) return;
+  conn.open = false;
+  clearTimeout(conn.idleTimer);
+  clearTimeout(conn.maxTimer);
+  byId.delete(conn.connectionId);
+  if (code === undefined || conn.pending) {
+    conn.socket.destroy();
+  } else {
+    const body = Buffer.alloc(2);
+    body.writeUInt16BE(code);
+    conn.socket.end(frame(0x8, body));
+  }
+  if (conn.pending) return;
+  log('WS', `${conn.connectionId} disconnected (${reason})`, { open: byId.size });
+  record('disconnect', conn, { reason });
+  const url = hooks().disconnect;
+  if (url) {
+    callIntegration('DELETE', url, conn)
+      .then((status) => record('$disconnect', conn, { status }))
+      .catch((err) => log('HOOK', `${conn.connectionId} disconnect failed`, { error: String(err) }));
+  }
+}
+
+async function callIntegration(method, url, conn, body) {
+  const target = url.replaceAll(CONNECTION_ID_PLACEHOLDER, encodeURIComponent(conn.connectionId));
+  const res = await fetch(target, { method, headers: conn.headers, body, signal: AbortSignal.timeout(HOOK_TIMEOUT_MS) });
+  await res.arrayBuffer();
+  return res.status;
+}
+
+/** The route key for [text] under [expression]: `$request.body.<path>` of a JSON message, else none. */
+function routeKey(expression, text) {
+  const match = /^\$request\.body\.(.+)$/.exec(expression ?? '$request.body.action');
+  if (!match) return undefined;
+  try {
+    let value = JSON.parse(text);
+    for (const part of match[1].split('.')) value = value?.[part];
+    return typeof value === 'string' || typeof value === 'number' ? String(value) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function onMessage(conn, text) {
+  const { routes = {}, routeSelection } = hooks();
+  const key = routeKey(routeSelection, text);
+  const route = key !== undefined && routes[key] ? key : routes.$default ? '$default' : undefined;
+  if (!route) {
+    record('message', conn, { route: key ?? null, status: 403 });
+    send(conn, 0x1, Buffer.from(JSON.stringify({ message: 'Forbidden', connectionId: conn.connectionId, requestId: crypto.randomUUID() })));
+    return;
+  }
+  try {
+    const status = await callIntegration('POST', routes[route], conn, text);
+    record('message', conn, { route, status });
+  } catch (err) {
+    record('message', conn, { route, status: 502 });
+    log('HOOK', `${conn.connectionId} route ${route} failed`, { error: String(err) });
+  }
+}
+
+// RFC 6455 framing: client frames must be masked, control frames are short and unfragmented and may arrive between
+// the fragments of a message, which are reassembled before onMessage.
+function onData(conn, chunk) {
+  conn.buffer = conn.buffer.length ? Buffer.concat([conn.buffer, chunk]) : chunk;
+  while (conn.open && conn.buffer.length >= 2) {
+    const b = conn.buffer;
+    const fin = (b[0] & 0x80) !== 0;
+    const opcode = b[0] & 0x0f;
+    if ((b[1] & 0x80) === 0) return close(conn, 1002, 'unmasked frame');
+    let len = b[1] & 0x7f;
+    let offset = 2;
+    if (len === 126) {
+      if (b.length < 4) return;
+      len = b.readUInt16BE(2);
+      offset = 4;
+    } else if (len === 127) {
+      if (b.length < 10) return;
+      len = Number(b.readBigUInt64BE(2));
+      offset = 10;
+    }
+    const control = opcode >= 0x8;
+    if (control && (!fin || len > 125)) return close(conn, 1002, 'bad control frame');
+    if (len > MAX_FRAME_BYTES) return close(conn, 1009, 'frame too large');
+    if (b.length < offset + 4 + len) return;
+    const mask = b.subarray(offset, offset + 4);
+    const payload = Buffer.from(b.subarray(offset + 4, offset + 4 + len));
+    for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i % 4];
+    conn.buffer = b.subarray(offset + 4 + len);
+    touch(conn);
+
+    if (opcode === 0x8) return close(conn, payload.length >= 2 ? payload.readUInt16BE(0) : 1000);
+    if (opcode === 0x9) {
+      send(conn, 0xa, payload);
+      continue;
+    }
+    if (opcode === 0xa) continue;
+    if (opcode > 0x2) return close(conn, 1003, 'unknown opcode');
+    conn.fragmentBytes += payload.length;
+    if (conn.fragmentBytes > MAX_MESSAGE_BYTES) return close(conn, 1009, 'message too large');
+    conn.fragments.push(payload);
+    if (fin) {
+      const text = Buffer.concat(conn.fragments).toString('utf8');
+      conn.fragments = [];
+      conn.fragmentBytes = 0;
+      onMessage(conn, text);
+    }
+  }
+}
+
+const server = http.createServer((_req, res) => {
+  res.writeHead(426, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ message: 'WebSocket upgrade required' }));
+});
+
+server.on('upgrade', async (req, socket) => {
+  const key = req.headers['sec-websocket-key'];
+  if (!key) {
+    socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+    return;
+  }
+  socket.setNoDelay(true);
+  const headers = Object.fromEntries(
+    Object.entries(req.headers).filter(([name, value]) => !UNFORWARDED.test(name) && typeof value === 'string'),
+  );
+  const conn = {
+    connectionId: newConnectionId(),
+    headers,
+    sourceIp: req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress,
+    userAgent: req.headers['user-agent'] ?? '',
+    connectedAt: new Date(),
+    lastActiveAt: new Date(),
+    socket,
+    open: true,
+    pending: true,
+    buffer: Buffer.alloc(0),
+    fragments: [],
+    fragmentBytes: 0,
+  };
+  // Registered before $connect runs, so the app can already post to the id while answering it.
+  byId.set(conn.connectionId, conn);
+  // A peer that drops without a close frame only half-closes an upgraded socket: 'close' would never come.
+  socket.on('end', () => close(conn));
+  socket.on('close', () => close(conn));
+  socket.on('error', () => close(conn));
+
+  const connectUrl = hooks().connect;
+  if (connectUrl) {
+    let status;
+    try {
+      status = await callIntegration('POST', connectUrl, conn);
+    } catch (err) {
+      log('HOOK', `${conn.connectionId} connect failed`, { error: String(err) });
+      status = 502;
+    }
+    if (!conn.open) return;
+    if (status < 200 || status >= 300) {
+      log('WS', `${conn.connectionId} refused by $connect (${status})`);
+      record('rejected', conn, { status });
+      const answer = status === 401 || status === 403 ? status : 502;
+      conn.open = false;
+      byId.delete(conn.connectionId);
+      socket.end(`HTTP/1.1 ${answer} ${http.STATUS_CODES[answer]}\r\nContent-Length: 0\r\n\r\n`);
+      return;
+    }
+  }
+
+  const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
+  socket.write(
+    'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
+      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+  );
+  conn.pending = false;
+  touch(conn);
+  conn.maxTimer = setTimeout(() => close(conn, 1001, 'maximum duration'), MAX_CONNECTION_MS);
+  log('WS', `${conn.connectionId} connected`, { open: byId.size });
+  record('connect', conn, { path: (req.url ?? '').split('?')[0] });
+  socket.on('data', (chunk) => {
+    try {
+      onData(conn, chunk);
+    } catch (err) {
+      log('ERROR', `${conn.connectionId} frame handling failed`, { error: String(err) });
+      close(conn, 1011, 'internal error');
+    }
+  });
+});
+
+// ---- Management API --------------------------------------------------------------------------------------------
+
+function reply(res, status, body, errorType) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (errorType) headers['x-amzn-ErrorType'] = errorType;
+  res.writeHead(status, headers);
+  res.end(body === undefined ? '' : JSON.stringify(body));
+}
+
+function awsError(res, status, type, message) {
+  reply(res, status, { __type: type, message }, type);
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size <= MAX_MESSAGE_BYTES + 1) chunks.push(c);
+    });
+    req.on('end', () => resolve({ body: Buffer.concat(chunks), size }));
+    req.on('error', reject);
+  });
+}
+
+const management = http.createServer(async (req, res) => {
+  try {
+    const path = (req.url ?? '').split('?')[0];
+    // Matched before decoding: an encoded id may hold '/' (%2F).
+    const connection = /\/(?:@|%40)connections\/([^/]+)$/.exec(path);
+    if (connection) {
+      if (!req.headers.authorization) return awsError(res, 403, 'MissingAuthenticationTokenException', 'Missing Authentication Token');
+      connection[1] = decodeURIComponent(connection[1]);
+      const conn = byId.get(connection[1]);
+      if (req.method === 'POST') {
+        const { body, size } = await readBody(req);
+        if (size > MAX_MESSAGE_BYTES) return awsError(res, 413, 'PayloadTooLargeException', 'Request too large');
+        if (!conn || conn.pending || !send(conn, 0x1, body)) {
+          record('gone', null, { connectionId: connection[1] });
+          return awsError(res, 410, 'GoneException', null);
+        }
+        record('post', conn, { bytes: size });
+        return reply(res, 200);
+      }
+      if (!conn || conn.pending) return awsError(res, 410, 'GoneException', null);
+      if (req.method === 'GET') {
+        return reply(res, 200, {
+          connectedAt: conn.connectedAt.toISOString(),
+          identity: { sourceIp: conn.sourceIp, userAgent: conn.userAgent },
+          lastActiveAt: conn.lastActiveAt.toISOString(),
+        });
+      }
+      if (req.method === 'DELETE') {
+        close(conn, 1000, 'deleted');
+        return reply(res, 204);
+      }
+      return awsError(res, 405, 'MethodNotAllowedException', 'Method not allowed');
+    }
+    if (req.method === 'GET' && path === '/connections') {
+      return reply(
+        res,
+        200,
+        [...byId.values()]
+          .filter((c) => !c.pending)
+          .map((c) => ({
+            connectionId: c.connectionId,
+            userId: c.headers['x-user-id'] || null,
+            since: c.connectedAt.toISOString(),
+            lastActiveAt: c.lastActiveAt.toISOString(),
+          })),
+      );
+    }
+    if (req.method === 'GET' && path === '/events') return reply(res, 200, events);
+    if (req.method === 'GET' && path === '/health') return reply(res, 200, { status: 'ok', connections: byId.size });
+    return awsError(res, 404, 'NotFoundException', 'Not found');
+  } catch (err) {
+    log('ERROR', 'management request failed', { error: String(err) });
+    if (!res.headersSent) awsError(res, 500, 'InternalServerErrorException', 'Internal server error');
+  }
+});
+
+server.listen(PORT, () => log('STARTUP', `websocket api: sockets on :${PORT}, management on :${MANAGEMENT_PORT}`));
+management.listen(MANAGEMENT_PORT);

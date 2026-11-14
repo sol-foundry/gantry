@@ -1,0 +1,8 @@
+#!/bin/sh
+# Rejects commit messages that credit an AI tool; see attribution-lines for what counts.
+hits=$("$(dirname "$0")/attribution-lines" < "$1")
+if [ -n "$hits" ]; then
+  echo "commit-msg: commit messages must not carry AI attribution. Remove these lines:" >&2
+  echo "$hits" | sed 's/^/  /' >&2
+  exit 1
+fi

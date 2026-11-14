@@ -63,6 +63,7 @@ fun main(args: Array<String>) {
                 Import(engine),
                 SyncCommand(engine),
                 GatewayCommand(engine),
+                DbCommand(engine),
                 AuthorizerCommand(engine),
                 SecretCommand(engine),
                 Mcp(engine),

@@ -6,6 +6,11 @@ import dev.gantry.db.Migrations
 import dev.gantry.db.RowEdit
 import dev.gantry.db.RowsDelete
 import dev.gantry.db.Sync
+import dev.gantry.dblog.dialectOfService
+import dev.gantry.dblog.parseQueryTime
+import dev.gantry.dblog.queryLog
+import dev.gantry.dblog.queryLoggedDatabases
+import dev.gantry.dblog.withReplay
 import dev.gantry.engine.App
 import dev.gantry.engine.Engine
 import dev.gantry.engine.EnvEntry
@@ -19,6 +24,7 @@ import dev.gantry.gateway.formYaml
 import dev.gantry.gateway.gatewayYmlHasComments
 import dev.gantry.gateway.parseGatewayConfig
 import dev.gantry.gateway.saveGatewayConfig
+import dev.gantry.gateway.socketStatus
 import dev.gantry.share.Importer
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -65,6 +71,7 @@ private const val DEFAULT_LOG_TAIL = 200
 private const val MAX_LOG_TAIL = 2000
 private const val PAGE_LIMIT_DEFAULT = 100
 private const val MAX_GATEWAY_CALLS = 1000
+private const val MAX_DB_QUERIES = 1000
 
 /** Starts the dashboard on 127.0.0.1:[port] and blocks. */
 fun startDashboard(
@@ -213,6 +220,31 @@ private fun Route.apiRoutes(
             call.respond(LogsResponse(blocking { engine.docker.logs(app(), call.parameters.getOrFail("service"), tail) }))
         }
 
+        route("/db/{service}/queries") {
+            get {
+                val service = dbService(engine) ?: return@get
+                val q = call.request.queryParameters
+                val limit = q["limit"]?.toIntOrNull()?.coerceIn(1, MAX_DB_QUERIES) ?: PAGE_LIMIT_DEFAULT
+                val from = q["from"]?.ifBlank { null }?.let { parseQueryTime(it) }
+                val to = q["to"]?.ifBlank { null }?.let { parseQueryTime(it) }
+                call.respond(blocking { engine.queryLog(app(), service).recent(limit, q["search"]?.ifBlank { null }, from, to) })
+            }
+            delete {
+                val service = dbService(engine) ?: return@delete
+                blocking { engine.queryLog(app(), service).clear() }
+                call.respond(Ok())
+            }
+            get("/{id}") {
+                val service = dbService(engine) ?: return@get
+                val found = blocking { engine.queryLog(app(), service).get(call.parameters.getOrFail("id")) }
+                if (found == null) {
+                    call.respond(HttpStatusCode.NotFound, ErrorBody("no such query"))
+                } else {
+                    call.respond(found.withReplay(apiJson, dialectOfService(service)))
+                }
+            }
+        }
+
         route("/gateway") {
             get("/calls") {
                 val app = gatewayApp(engine) ?: return@get
@@ -224,6 +256,10 @@ private fun Route.apiRoutes(
                 val app = gatewayApp(engine) ?: return@delete
                 blocking { engine.callLog(app).clear() }
                 call.respond(Ok())
+            }
+            get("/sockets") {
+                val app = gatewayApp(engine) ?: return@get
+                call.respond(blocking { engine.socketStatus(app) })
             }
             get("/calls/{id}") {
                 val app = gatewayApp(engine) ?: return@get
@@ -406,6 +442,15 @@ private suspend fun RoutingContext.gatewayApp(engine: Engine): String? {
     val app = app()
     if (blocking { engine.loadApp(app).service(GATEWAY) } != null) return app
     call.respond(HttpStatusCode.NotFound, ErrorBody("'$app' has no gateway (run `gantry add $app gateway`)"))
+    return null
+}
+
+/** The service of a query-log route, or null after answering 404 because it is not a query-logged database of the app. */
+private suspend fun RoutingContext.dbService(engine: Engine): String? {
+    val app = app()
+    val service = service()
+    if (service in blocking { engine.queryLoggedDatabases(app) }) return service
+    call.respond(HttpStatusCode.NotFound, ErrorBody("'$service' is not a query-logged database of '$app'"))
     return null
 }
 

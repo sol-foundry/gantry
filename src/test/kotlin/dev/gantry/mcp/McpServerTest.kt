@@ -1,5 +1,7 @@
 package dev.gantry.mcp
 
+import dev.gantry.dblog.QueryEntry
+import dev.gantry.dblog.QueryLogWriter
 import dev.gantry.engine.Engine
 import dev.gantry.engine.NO_DOCKER
 import kotlinx.serialization.json.Json
@@ -24,7 +26,7 @@ class McpServerTest {
         Engine(
             home = Files.createTempDirectory("gantry-mcp-test"),
             dockerCommand = NO_DOCKER,
-            gatewayLib = Files.createTempDirectory("gantry-lib").also { it.resolve("gantry-0.0.0.jar").writeText("jar bytes") },
+            runtimeLib = Files.createTempDirectory("gantry-lib").also { it.resolve("gantry-0.0.0.jar").writeText("jar bytes") },
         ).apply {
             create("shop", services = listOf("postgres"))
         }
@@ -63,10 +65,10 @@ class McpServerTest {
     }
 
     @Test
-    fun `lists one read-only tool`() {
+    fun `lists the connection details tool first, read-only`() {
         val tools = exchange("""{"jsonrpc":"2.0","id":3,"method":"tools/list"}""").single().at("result", "tools").jsonArray
 
-        assertEquals(1, tools.size)
+        assertEquals(2, tools.size)
         assertEquals("get_connection_details", tools[0].at("name").jsonPrimitive.content)
         assertEquals("true", tools[0].at("annotations", "readOnlyHint").jsonPrimitive.content)
         assertEquals("object", tools[0].at("inputSchema", "type").jsonPrimitive.content)
@@ -200,7 +202,7 @@ class McpServerTest {
                 .jsonArray
                 .map { it.at("name").jsonPrimitive.content }
 
-        assertEquals(listOf("get_connection_details"), names("shop"))
+        assertEquals(listOf("get_connection_details", "get_db_queries"), names("shop"))
 
         engine.create("edge", services = listOf("gateway"))
         val tools = exchange("""{"jsonrpc":"2.0","id":3,"method":"tools/list"}""", app = "edge").single().at("result", "tools").jsonArray
@@ -250,6 +252,127 @@ class McpServerTest {
                 .jsonArray[0]
                 .at("text")
                 .jsonPrimitive.content,
+        )
+    }
+
+    private fun queriesCall(arguments: String = "{}") =
+        """{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"get_db_queries","arguments":$arguments}}"""
+
+    private fun dbEntry(
+        id: String,
+        time: String,
+        sql: String,
+        rows: List<List<String?>>,
+        params: List<String?> = emptyList(),
+    ) = QueryEntry(
+        id = id,
+        time = time,
+        durationMs = 1.0,
+        service = "postgres",
+        connectionId = 1,
+        client = null,
+        sql = sql,
+        params = params,
+        columns = listOf("a"),
+        rows = rows,
+        rowCount = rows.size.toLong(),
+        affected = null,
+        command = "SELECT",
+        error = null,
+        truncated = false,
+    )
+
+    @Test
+    fun `get_db_queries lists entries without rows, and returns one by id with rows and values cut`() {
+        val file = engine.appDir("shop").resolve("db-log").resolve("postgres.jsonl")
+        QueryLogWriter(file, 10_000_000).use { w ->
+            w.append(dbEntry("one", "2026-11-14T10:00:00Z", "select 1", listOf(listOf("x"))))
+            w.append(
+                dbEntry(
+                    "two",
+                    "2026-11-14T10:01:00Z",
+                    "select big",
+                    (1..50).map { listOf("v".repeat(500)) },
+                    listOf("p".repeat(500), null),
+                ),
+            )
+        }
+
+        val tools = exchange("""{"jsonrpc":"2.0","id":3,"method":"tools/list"}""").single().at("result", "tools").jsonArray
+        assertEquals(listOf("get_connection_details", "get_db_queries"), tools.map { it.at("name").jsonPrimitive.content })
+        assertEquals("true", tools[1].at("annotations", "readOnlyHint").jsonPrimitive.content)
+
+        fun entries(arguments: String) =
+            Json
+                .parseToJsonElement(
+                    exchange(queriesCall(arguments))
+                        .single()
+                        .at("result", "content")
+                        .jsonArray[0]
+                        .at("text")
+                        .jsonPrimitive.content,
+                ).jsonArray
+
+        val all = entries("""{"limit":5}""")
+        assertEquals(listOf("two", "one"), all.map { it.at("id").jsonPrimitive.content })
+        assertTrue(all.all { it.jsonObject["rows"] == null || it.jsonObject["rows"] is JsonNull })
+        assertEquals("50", all[0].at("rowCount").jsonPrimitive.content)
+        assertEquals(
+            200,
+            all[0]
+                .at("params")
+                .jsonArray[0]
+                .jsonPrimitive.content.length,
+        )
+
+        val one = entries("""{"id":"two"}""").single()
+        assertEquals(20, one.at("rows").jsonArray.size)
+        assertEquals(
+            200,
+            one
+                .at("rows")
+                .jsonArray[0]
+                .jsonArray[0]
+                .jsonPrimitive.content.length,
+        )
+        assertEquals(
+            200,
+            one
+                .at("params")
+                .jsonArray[0]
+                .jsonPrimitive.content.length,
+        )
+        assertEquals("true", one.at("truncated").jsonPrimitive.content)
+        assertEquals("select big", one.at("replaySql").jsonPrimitive.content)
+        assertEquals("false", one.at("replayComplete").jsonPrimitive.content)
+        assertEquals(
+            "select 1",
+            entries("""{"id":"one"}""")
+                .single()
+                .at("replaySql")
+                .jsonPrimitive.content,
+        )
+        assertEquals(null, all[0].jsonObject["replaySql"])
+        assertEquals(0, entries("""{"id":"missing"}""").size)
+
+        assertEquals(listOf("one"), entries("""{"service":"postgres","search":"select 1"}""").map { it.at("id").jsonPrimitive.content })
+        assertEquals(listOf("two"), entries("""{"since":"2026-11-14T10:01:00Z"}""").map { it.at("id").jsonPrimitive.content })
+
+        val bad = exchange(queriesCall("""{"service":"nope"}""")).single().at("result")
+        assertEquals("true", bad.at("isError").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `get_db_queries is unknown for an app without a query-logged database`() {
+        engine.create("cache", services = listOf("valkey"))
+        val tools = exchange("""{"jsonrpc":"2.0","id":3,"method":"tools/list"}""", app = "cache").single().at("result", "tools").jsonArray
+        assertEquals(listOf("get_connection_details"), tools.map { it.at("name").jsonPrimitive.content })
+        assertEquals(
+            -32602,
+            exchange(queriesCall(), app = "cache")
+                .single()
+                .at("error", "code")
+                .jsonPrimitive.int,
         )
     }
 

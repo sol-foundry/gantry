@@ -56,6 +56,15 @@ const base = (): GatewayConfig => ({
   cors: null,
   stripHeaders: ["x-user-id", "x-gateway-user-email", "x-gateway-auth-strategy", "x-internal-api-key", "x-error-code"],
   log: { maxCalls: 1000, maxBodyBytes: 65536, redact: ["authorization", "cookie", "set-cookie", "x-internal-api-key"] },
+  websocket: {
+    auth: "fb",
+    steps: ["user"],
+    headers: { "x-user-id": "{{userId}}" },
+    connect: "{{upstream}}/connect/{{connectionId}}",
+    disconnect: null,
+    routeSelection: "$request.body.action",
+    routes: { $default: "{{upstream}}/ws/messages/{{connectionId}}" },
+  },
 });
 
 let failed = 0;

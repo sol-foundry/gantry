@@ -9,6 +9,7 @@ flyway = "13.12.0"
 ktlint = "14.2.0"
 kaml = "0.104.0"
 nimbus-jose-jwt = "10.10"
+bouncycastle = "1.87"
 
 [libraries]
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
@@ -23,6 +24,7 @@ kaml = { module = "com.charleskorn.kaml:kaml", version.ref = "kaml" }
 # The YAML parser kaml is built on, used directly to find comments. No version: it is always the one kaml brings.
 snakeyaml-engine = { module = "it.krzeminski:snakeyaml-engine-kmp" }
 nimbus-jose-jwt = { module = "com.nimbusds:nimbus-jose-jwt", version.ref = "nimbus-jose-jwt" }
+bcpkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncycastle" }
 postgres = { module = "org.postgresql:postgresql", version.ref = "postgres" }
 mysql = { module = "com.mysql:mysql-connector-j", version.ref = "mysql" }
 flyway-core = { module = "org.flywaydb:flyway-core", version.ref = "flyway" }

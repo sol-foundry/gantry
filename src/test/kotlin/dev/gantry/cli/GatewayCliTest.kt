@@ -29,7 +29,7 @@ import kotlin.test.assertTrue
 class GatewayCliTest {
     private val lib: Path = Files.createTempDirectory("gantry-lib").also { it.resolve("gantry.jar").writeText("jar") }
     private val engine =
-        Engine(home = Files.createTempDirectory("gantry-cli-gateway"), dockerCommand = NO_DOCKER, gatewayLib = lib).apply {
+        Engine(home = Files.createTempDirectory("gantry-cli-gateway"), dockerCommand = NO_DOCKER, runtimeLib = lib).apply {
             create("shop", services = listOf("gateway"))
         }
     private val docker = FakeContainers()

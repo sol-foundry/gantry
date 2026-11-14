@@ -31,6 +31,7 @@ class DatabaseExplorer(
                 hasSchemas = dialect.hasSchemas,
                 schemas = dialect.schemasSql?.let { sql -> connection.query(sql).rows.map { it[0].orEmpty() } }.orEmpty(),
                 tables = tables(connection, dialect),
+                mirrorSchemas = dialect.mirrorSchemasSql?.let { sql -> connection.query(sql).rows.map { it[0].orEmpty() } }.orEmpty(),
             )
         }
     }

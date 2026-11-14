@@ -5,6 +5,9 @@ import dev.gantry.engine.GantryException
 import java.net.URI
 import java.net.URLEncoder
 
+/** Where APISIX sends WebSocket handshakes: the relay container in the gateway service. */
+internal const val WEBSOCKET_RELAY_UPSTREAM = "http://gateway-ws:8080"
+
 /** What the renderer needs to know about the app beyond its `gateway.yml`. */
 data class RenderContext(
     val app: String,
@@ -46,18 +49,34 @@ fun renderApisixConfig(): String =
     )
 
 /**
- * APISIX `apisix.yaml`: one route per gateway route in order (earlier routes get a higher priority, so the first
- * match wins), then the default action as the catch-all. An upstream URL must not carry a path.
+ * APISIX `apisix.yaml`: WebSocket handshakes first, on any path, then one route per gateway route in order (earlier
+ * routes get a higher priority, so the first match wins), then the default action as the catch-all. An upstream URL
+ * must not carry a path.
  */
 fun renderApisixRoutes(
     config: GatewayConfig,
     ctx: RenderContext,
 ): String {
     val last = config.routes.size
+    val websocket =
+        apisixRoute(
+            config,
+            ctx,
+            WEBSOCKET_ROUTE,
+            WEBSOCKET_ROUTE,
+            Match(),
+            config.websocket.auth,
+            null,
+            WEBSOCKET_RELAY_UPSTREAM,
+            config.websocketHeaders(),
+            last + 1,
+            vars = listOf(listOf("http_upgrade", "~*", "^websocket$")),
+        )
     val routes =
-        config.routes.mapIndexed { i, r ->
-            apisixRoute(config, ctx, r.name, r.name, r.match, r.auth, r.rewrite, r.upstream, config.headersFor(r), last - i)
-        } +
+        listOf(websocket) +
+            config.routes.mapIndexed { i, r ->
+                apisixRoute(config, ctx, r.name, r.name, r.match, r.auth, r.rewrite, r.upstream, config.headersFor(r), last - i)
+            } +
             apisixRoute(
                 config,
                 ctx,
@@ -85,6 +104,7 @@ private fun apisixRoute(
     upstream: String?,
     headers: Map<String, String>,
     priority: Int,
+    vars: List<List<String>>? = null,
 ): Map<String, Any> {
     val route = linkedMapOf<String, Any>("id" to id, "uri" to "/*")
     if (match.host != "*") route["hosts"] = listOf(match.host)
@@ -92,7 +112,10 @@ private fun apisixRoute(
     route["priority"] = priority
     // APISIX proxies a WebSocket upgrade only on routes that allow it; the route's auth still runs on the handshake.
     route["enable_websocket"] = true
-    if (id != "default") route["vars"] = listOf(listOf("uri", "~~", globToRegex(match.path).pattern))
+    when {
+        vars != null -> route["vars"] = vars
+        id != "default" -> route["vars"] = listOf(listOf("uri", "~~", globToRegex(match.path).pattern))
+    }
     route["upstream"] = apisixUpstream(upstream ?: config.upstream ?: ctx.defaultUpstream)
     // APISIX's 60 s default read timeout would cut an idle WebSocket or a quiet SSE stream.
     route["timeout"] = linkedMapOf("connect" to 6, "send" to 3600, "read" to 3600)

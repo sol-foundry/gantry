@@ -1,5 +1,6 @@
 package dev.gantry.engine
 
+import dev.gantry.dblog.Certificates
 import dev.gantry.gateway.AUTHORIZERS_CONTEXT
 import dev.gantry.gateway.GATEWAY
 import dev.gantry.gateway.GatewayRuntime
@@ -13,6 +14,7 @@ import dev.gantry.gateway.updatePendingAuthorizers
 import dev.gantry.gateway.writeAppliedGatewayConfig
 import dev.gantry.gateway.writeAuthorizerEnvFiles
 import dev.gantry.gateway.writeGatewaySecrets
+import dev.gantry.gateway.writeWebSocketHooks
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import java.net.InetAddress
@@ -31,6 +33,10 @@ internal val appNameRule = Regex("^[a-z][a-z0-9-]*$")
 val DATABASE_SERVICES = setOf("postgres", "mysql")
 private val envNameRule = Regex("^[A-Za-z_][A-Za-z0-9_]*$")
 private const val CONFIG_HASH_BYTES = 8
+
+/** A top-level service in a catalog fragment: two spaces, its name, a colon. */
+private val SERVICE_HEADER = Regex("(?m)^  [a-zA-Z0-9_-]+:\\s*$")
+private val RUNTIME_PLACEHOLDER = Regex("""\{\{\s*runtime\s*}}""")
 private const val LEGACY_CACHE_UI = "redisinsight"
 private val portRegistrySerializer = MapSerializer(String.serializer(), Int.serializer())
 
@@ -45,8 +51,8 @@ class Engine(
     val home: Path = defaultHome(),
     val catalog: Catalog = Catalog.load(),
     val dockerCommand: String = defaultDockerCommand(),
-    /** The jars gantry-auth runs from; null means the installed distribution's `lib/` (tests pass their own). */
-    private val gatewayLib: Path? = null,
+    /** The jars gantry-auth and the query-log proxies run from; null means the installed distribution's `lib/` (tests pass their own). */
+    private val runtimeLib: Path? = null,
 ) {
     val docker = Docker(this)
     val secrets = SecretStore(home)
@@ -77,7 +83,7 @@ class Engine(
     /** [app] with services and env renames saved under ids and variable names older versions used moved to the current ones. */
     private fun renamed(app: App): App =
         app.copy(
-            services = app.services.map { state -> LEGACY_SERVICE_IDS[state.id]?.let { state.copy(id = it) } ?: state },
+            services = foldLegacyServices(app.services, { it.id }) { _, into -> ServiceState(into) },
             envNames = upgradeEnvNames(app.envNames),
         )
 
@@ -93,8 +99,8 @@ class Engine(
      * entry is dropped and its host port moves to valkey's `ui` port. Container and volume names are unchanged, so
      * the running UI and its registered connection carry over on the next `up`.
      *
-     * Services that were renamed (`realtime` is now `websocket`) keep their ports; their container gets the new name,
-     * and the next `up` removes the old one as an orphan.
+     * Services folded into another (`realtime` and `websocket` are now the gateway's WebSocket half) keep their host
+     * ports under the new service's port names; the next `up` removes their old container as an orphan.
      */
     @Synchronized
     private fun upgrade(app: App): App {
@@ -107,7 +113,9 @@ class Engine(
                 val prefix = "${app.name}/$old/"
                 ports.keys.filter { it.startsWith(prefix) }.forEach { key ->
                     val port = ports.remove(key)!!
-                    ports.putIfAbsent("${app.name}/${LEGACY_SERVICE_IDS.getValue(old)}/${key.removePrefix(prefix)}", port)
+                    val name = key.removePrefix(prefix)
+                    val moved = LEGACY_PORT_NAMES[old]?.get(name) ?: name
+                    ports.putIfAbsent("${app.name}/${LEGACY_SERVICE_IDS.getValue(old)}/$moved", port)
                 }
             }
         }
@@ -160,7 +168,13 @@ class Engine(
         freshData: Boolean = false,
     ): App {
         val app = loadApp(appName)
-        if (freshData) leftoverVolume(appName, service)?.let { docker.removeVolume(it, "$appName-${catalog.resolve(service).id}") }
+        if (freshData) {
+            leftoverVolume(appName, service)?.let {
+                val id = catalog.resolve(service).id
+                docker.removeContainer("$appName-${databaseServiceName(id, true)}")
+                docker.removeVolume(it, "$appName-$id")
+            }
+        }
         return render(withService(app, service, options))
     }
 
@@ -395,15 +409,10 @@ class Engine(
             .toString()
     }
 
-    /**
-     * Placeholder values for one service. The gateway also gets its pushed authorizers (as JSON, for its computed
-     * blocks). With [forRender], the gateway also gets `runtime`: the staged jars its
-     * gantry-auth container mounts (staging copies files, so only rendering asks for it).
-     */
+    /** Placeholder values for one service. The gateway also gets its pushed authorizers (as JSON, for its computed blocks). */
     private fun context(
         app: App,
         state: ServiceState,
-        forRender: Boolean = false,
     ): Context {
         val def = catalog.resolve(state.id)
         val dir = appDir(app.name).toAbsolutePath()
@@ -411,6 +420,7 @@ class Engine(
             mutableMapOf(
                 "app" to app.name,
                 "app_id" to app.name.replace('-', '_'),
+                "service" to state.id,
                 "dir" to dir.toString(),
                 "svc_dir" to dir.resolve("services").resolve(state.id).toString(),
             )
@@ -424,9 +434,6 @@ class Engine(
             context[SET_SECRETS_CONTEXT] = secrets.secretNames(app.name).joinToString("\n")
             // Authorizers whose container still runs with an older env: their routes go to gantry-auth meanwhile.
             context[PENDING_AUTHORIZERS_CONTEXT] = pendingAuthorizers(dir).keys.joinToString("\n")
-        }
-        if (forRender && def.id == GATEWAY) {
-            context["runtime"] = (gatewayLib?.let { GatewayRuntime.stage(home, it) } ?: GatewayRuntime.stage(home)).toString()
         }
         return context
     }
@@ -444,17 +451,22 @@ class Engine(
         val volumes = linkedSetOf<String>()
         for (state in app.services) {
             val def = catalog.resolve(state.id)
-            val context = context(app, state, forRender = true)
+            val context = context(app, state).toMutableMap()
             val serviceDir = Path.of(context.getValue("svc_dir"))
             Resources.copyTree(Resources.directory("catalog").resolve(def.id), serviceDir)
             def.dirs.forEach { Files.createDirectories(dir.resolve(it)) }
+            if (def.id in DATABASE_SERVICES && queryLogOn(context)) Certificates.ensure(dir, app.name)
+            val services = Template.expandComputed(Files.readString(serviceDir.resolve("services.yml")), context)
+            // Staging copies files, so only services that run gantry's own jars (gantry-auth, query-log proxies) ask for it.
+            if (RUNTIME_PLACEHOLDER.containsMatchIn(services)) context["runtime"] = stageRuntime().toString()
             val rendered =
                 def.files.map { (output, template) ->
-                    renderTemplate(serviceDir.resolve(template), context).also { writeServiceFile(dir.resolve(output), it) }
+                    dir.resolve(output) to
+                        renderTemplate(serviceDir.resolve(template), context).also { writeServiceFile(dir.resolve(output), it) }
                 }
             val fragment =
                 withConfigHash(
-                    renderTemplate(serviceDir.resolve("services.yml"), context, yamlEscape = true).trimEnd('\n') + "\n",
+                    Template.render(services, context, yamlEscape = true).trimEnd('\n') + "\n",
                     rendered,
                 )
             fragments += fragment
@@ -467,27 +479,47 @@ class Engine(
         Files.writeString(dir.resolve("${app.name}.env"), "# Generated by `gantry env ${app.name}`\n${envText(app)}")
         writeGatewaySecrets(app, dir, secrets)
         writeAppliedGatewayConfig(app, dir)
+        writeWebSocketHooks(app, dir)
         writeAuthorizerEnvFiles(app, dir, secrets)
         return app
     }
 
     /**
-     * Labels the fragment's first service with a hash of its generated files. Compose only recreates a
-     * container when its definition changes, so without this an edited bind-mounted config (e.g. a new queue)
-     * would be ignored by `up` on a running app.
+     * Labels each service in the fragment with a hash of the generated files it mounts. Compose only recreates a
+     * container when its definition changes, so without this an edited bind-mounted file (a new queue, a new relay
+     * script) would be ignored by `up` on a running app; a service that mounts none of them is left alone, so an edit
+     * restarts only the containers that read it.
      */
     private fun withConfigHash(
         fragment: String,
-        files: List<String>,
+        files: List<Pair<Path, String>>,
     ): String {
         if (files.isEmpty()) return fragment
-        val digest = MessageDigest.getInstance("SHA-256").digest(files.joinToString("\u0000").toByteArray())
-        val hash = digest.take(CONFIG_HASH_BYTES).joinToString("") { "%02x".format(it) }
-        val firstLineEnd = fragment.indexOf('\n') + 1
-        return fragment.substring(0, firstLineEnd) +
-            "    labels:\n      gantry.config-hash: \"$hash\"\n" +
-            fragment.substring(firstLineEnd)
+        val starts = SERVICE_HEADER.findAll(fragment).map { it.range.first }.toList()
+        if (starts.isEmpty()) return fragment
+        val out = StringBuilder(fragment.substring(0, starts.first()))
+        (starts + fragment.length).zipWithNext().forEach { (start, end) ->
+            val block = fragment.substring(start, end)
+            val mounted = files.filter { (path, _) -> "\"$path:" in block }.map { it.second }
+            if (mounted.isEmpty()) {
+                out.append(block)
+            } else {
+                val digest = MessageDigest.getInstance("SHA-256").digest(mounted.joinToString("\u0000").toByteArray())
+                val hash = digest.take(CONFIG_HASH_BYTES).joinToString("") { "%02x".format(it) }
+                val headerEnd = block.indexOf('\n') + 1
+                out
+                    .append(
+                        block,
+                        0,
+                        headerEnd,
+                    ).append("    labels:\n      gantry.config-hash: \"$hash\"\n")
+                    .append(block, headerEnd, block.length)
+            }
+        }
+        return out.toString()
     }
+
+    private fun stageRuntime(): Path = runtimeLib?.let { GatewayRuntime.stage(home, it) } ?: GatewayRuntime.stage(home)
 
     private fun renderTemplate(
         file: Path,

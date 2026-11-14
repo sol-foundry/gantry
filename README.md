@@ -14,8 +14,8 @@ Cursor, Codex) look up an app's connection details themselves over MCP.
 - Built-in explorers for databases and queues; RedisInsight, the Temporal UI and Kafka UI come with their services.
 - Postgres and MySQL run [Flyway](https://flywaydb.org) migrations from your service's own folder, and can be
   synced from a source database such as stage.
-- A REST API gateway in front of your app checks logins (Firebase, Cognito, Supabase, JWT or your own code) and logs
-  every call, so you can see exactly what your app was sent.
+- An API gateway in front of your app checks logins (Firebase, Cognito, Supabase, JWT or your own code) for REST
+  calls and WebSocket connections alike, and logs both, so you can see exactly what your app was sent.
 
 ## Install
 
@@ -123,14 +123,15 @@ cache, Temporal and Kafka open their own UI in a new tab) and the
   the env block on the right (copy it, or rename variables to what your code reads). Start/Stop/Destroy on top;
   Start is disabled while every service runs. In a running app, adding, reconfiguring or removing a service in
   the dashboard applies at once (the CLI's `gantry add`/`remove` still wait for `gantry start`).
-- **Database pages** — the breadcrumb shows the database name; **Sync from source** sits at the top right.
+- **Database pages** — the breadcrumb shows the database name; **Sync from source** sits at the top right. The
+  **Queries** tab shows what your app ran against the database (see [Query log](#query-log)).
 - Light, dark or system theme from the sidebar footer.
 
 Per service:
 
 | Service | Dashboard |
 |---|---|
-| postgres, mysql | built-in database browser (below), Flyway migrations, SQL console |
+| postgres, mysql | built-in database browser (below), Flyway migrations, SQL console, query log |
 | valkey | RedisInsight, started with the cache and pre-connected to it; **Open UI** on the app page |
 | elasticmq | built-in queue explorer: depth, peek, send, purge (see note below) |
 | temporal | links to the Temporal Web UI |
@@ -140,7 +141,11 @@ Per service:
 The database browser works at two levels:
 
 - **Database:** tables and views with row estimates and sizes; create, rename, truncate and drop tables; create
-  and drop schemas (Postgres).
+  and drop schemas (Postgres). The table list filters by name and by kind (**All**, **Tables**, **Views**), and
+  each schema's group folds. *Mirror* schemas (Postgres), ones holding nothing but views that each read a
+  same-named table in another schema, such as a read-only access layer for a BI tool, are grouped in a
+  **Mirror schemas** section at the bottom, folded at first. A name filter, or the table you have open, shows
+  through a fold.
 - **Table:** page, sort and filter rows (`WHERE` clause); insert, edit (double-click a cell) and delete rows by
   primary key; add, edit and drop columns; create and drop indexes; view constraints.
 
@@ -163,24 +168,24 @@ can run SQL and manage containers.
 
 | Name | What it runs | Options (`--set key=value`) |
 |---|---|---|
-| `postgres` | PostgreSQL | `version`, `name`, `user`, `password` (generated), `migrations`, `migrate_on_up` |
+| `postgres` | PostgreSQL | `version`, `name`, `user`, `password` (generated), `migrations`, `migrate_on_up`, `query_log*` |
 | `valkey` | Valkey, Redis-compatible, plus RedisInsight as its UI | `version`, `maxmemory`, `persist` |
 | `elasticmq` | SQS-compatible queue | `queues`, `max_receive_count` |
 | `temporal` | Temporal dev server | `version`, `search_attributes` |
 | `kafka` | Apache Kafka (single KRaft broker), plus Kafka UI | `version`, `topics`, `partitions` |
-| `mysql` | MySQL | `version`, `name`, `user`, `password`, `root_password` (generated), `migrations`, `migrate_on_up` |
-| `gateway` | REST API gateway (Apache APISIX) with login checks; see [REST API gateway](#rest-api-gateway) | `version`, `upstream` |
-| `websocket` | WebSocket gateway: a pub/sub relay standing in for an AWS API Gateway WebSocket API | `version` (Node) |
+| `mysql` | MySQL | `version`, `name`, `user`, `password`, `root_password` (generated), `migrations`, `migrate_on_up`, `query_log*` |
+| `gateway` | API gateway for REST (Apache APISIX) and WebSocket on one port, with login checks; see [API gateway](#api-gateway) | `version`, `upstream`, `node_version` |
+| `dynamodb` | Amazon DynamoDB Local, plus DynamoDB Admin as its UI | `version`, `tables`, `persist` |
 
 `gantry services` prints the same list with defaults.
 
 - `queues` — `name[:visibilitySecs[:dlqName]],...`; each queue gets a dead-letter queue (default `<name>-dlq`).
 - `search_attributes` — `Name=Type,...` registered on the Temporal dev server.
-- `websocket` — browsers connect to `WEBSOCKET_WS_URL` (`/ws`) and send `{"action": "subscribe", "topic": "..."}`
-  (or `unsubscribe`, or `topics: [...]`); the app POSTs `{"topic", "eventType", "payload"}` to `WEBSOCKET_URL/publish`
-  and every subscriber of the topic receives it. `POST /subscribe` / `/unsubscribe` register topics for every open
-  connection, since locally there are no connection ids. Nothing persists across restarts. Behind the `gateway`,
-  route `/ws` and the HTTP paths to it as `auth: public`.
+- `tables` (dynamodb) — `name:hash[,range][+index=hash[,range][/keys]]...[~ttl]`, tables separated by `;`; each is
+  created on every `start` when missing. A key is `attr` or `attr#N` (`S`, the default, `N` or `B`); `+index` adds a
+  global secondary index projecting all attributes, or only keys with `/keys`; `~attr` turns on TTL. For example
+  `sessions:connectionId,topic+topic-index=topic/keys~ttl`. Apps reach it at `AWS_ENDPOINT_URL_DYNAMODB`, which recent
+  AWS SDKs read on their own; any credentials and region see the same tables.
 - `topics` — `name[:partitions],...` created on every `start` (existing topics are left alone). Other topics are
   auto-created on first use with `partitions` partitions (default 1). Host clients connect to
   `KAFKA_BOOTSTRAP_SERVERS`; other containers in the app use `kafka:19092`.
@@ -193,6 +198,7 @@ can run SQL and manage containers.
 - `gantry remove` keeps a database's data volume. Adding that database back asks what to do with it:
   `--fresh-data` deletes it so the database starts empty with its new credentials, `--keep-data` reuses it (set
   `user` and `password` to the old ones). The dashboard's **Add service** shows the same choice.
+- `query_log*` — see [Query log](#query-log).
 - Seed files: put `*.sql` / `*.sh` in `~/.gantry/apps/<app>/initdb/` (Postgres) or `initdb-mysql/` (MySQL). They
   run on a fresh volume only. For schema that evolves, prefer migrations.
 
@@ -216,6 +222,58 @@ and the dashboard's **Start** apply pending migrations after the containers are 
 
 If seed files already created objects, the first `migrate` records a version-0 baseline and then applies every
 migration from V1, rather than refusing the non-empty schema.
+
+## Query log
+
+Every statement your app sends to Postgres or MySQL is recorded with what the database answered: the SQL, its
+parameter values, when it ran and how long it took, and the returned rows, the number of rows changed, or the
+error. It works for any app in any language, with no change to it: a small proxy, part of Gantry, sits on the
+database's `main` port, so `gantry env` and your connection settings stay exactly as they are.
+
+- In the dashboard, the database page's **Queries** tab lists statements newest first, live. Search matches the SQL
+  (so table names too) and the client name; the time filter takes a preset (the last 5m, 15m, 1h, 24h) or a custom
+  from/to window. Click a statement for the full SQL, its parameters and the results table, plus **Replayable SQL**:
+  the statement with its parameter values written in, ready to copy into `psql`, `mysql` or the SQL console (marked
+  when a value was cut). **Clear** empties the log.
+- `gantry db queries my-app [service] [--search TEXT] [--since 15m] [--from T] [--to T] [--limit N] [-f]` prints
+  them as a table, oldest first; `-f` keeps printing new ones. The service is needed only when the app has both
+  databases. `gantry db clear my-app [service]` empties the log; new statements keep being recorded.
+- Coding agents connected with `gantry mcp install` get a `get_db_queries` tool with search and since filters,
+  so they can see what your app actually ran; passing a statement's `id` returns it with its result rows and its
+  replayable SQL (`replaySql`, with `replayComplete` false when a value was cut).
+- Errors show the database's own code: the SQLSTATE for Postgres (`42P01`), `<errno>/<sqlstate>` for MySQL
+  (`1146/42S02`).
+
+Everything is recorded as is, nothing redacted: background traffic (schedulers, pool checks, migrations your app
+runs) and the queries agents run with `psql` or `mysql` show up beside your app's own, told apart by the client
+name (Postgres `application_name`, MySQL's `program_name` attribute). Gantry's own queries (the SQL console, the
+database browser, `gantry sync`, `gantry migrate`) are never logged: they go to the database directly on its `direct`
+port, published on `127.0.0.1`, and every connection Gantry opens names itself `gantry`, which the proxy never
+records, so they stay out even when they do pass through it. Point your own tools at `direct` too when you don't want
+them in the log.
+
+**TLS.** Apps that require TLS, as they do against RDS, connect unchanged: the proxy accepts Postgres
+`sslmode=require` and MySQL `sslMode=REQUIRED` with a certificate Gantry generates per app, and plaintext
+connections keep working. Modes that verify the certificate (`verify-ca`, `verify-full`, `VERIFY_CA`,
+`VERIFY_IDENTITY`) are not supported locally; use `require`. Prepared statements, query cancellation and timeouts,
+`COPY`, `LISTEN`/`NOTIFY`, cursors and transactions work through the proxy as they do without it.
+
+Options (per database, `--set key=value`):
+
+| Option | Default | What it does |
+|---|---|---|
+| `query_log` | `true` | `false` runs no proxy: the database sits on `main` itself and nothing is recorded |
+| `query_log_max_rows` | `1000` | result rows kept per statement; past it the first rows are kept with the total count |
+| `query_log_max_bytes` | `1048576` (1 MB) | SQL, each parameter and the result data kept per statement; past it they are cut and marked |
+| `query_log_max_size` | `209715200` (200 MB) | size of the whole log per database; past it the oldest entries go first |
+
+The log lives in the app's `db-log/<service>.jsonl` and survives restarts until trimmed or cleared. Recording never
+holds your app up: if the proxy falls behind, it drops result rows first, and every statement keeps at least its SQL,
+parameters, timing and outcome. Turning `query_log` on or off keeps the data: the next `gantry start` stops the
+database, then brings it back under its new name (`<service>-db` behind the proxy) on the same volume. Other
+containers in the app reach the database through the proxy as `postgres` / `mysql`, like the app does.
+`gantry logs my-app postgres` and the dashboard show the database's own log beside the proxy's (name `postgres-db`
+for the database alone), and the service's status is the worse of the two.
 
 ## Data persistence
 
@@ -331,17 +389,22 @@ sync runs, the button shows a spinner and reopens the progress.
 - A source with a newer major version than the local database is refused, with a hint to raise the local
   `version` option.
 
-## REST API gateway
+## API gateway
 
-Put a REST API gateway in front of your app, so it gets the same login checks and identity headers locally as it does
-behind your production gateway. The `gateway` service runs [Apache APISIX](https://apisix.apache.org) plus
-gantry-auth, which verifies Firebase, Cognito, Supabase and other JWT logins, or asks an authorizer you write.
+Put an API gateway in front of your app, so it gets the same login checks and identity headers locally as it does
+behind your production gateway, for REST calls and WebSocket connections alike. The `gateway` service runs
+[Apache APISIX](https://apisix.apache.org), gantry-auth, which verifies Firebase, Cognito, Supabase and other JWT
+logins or asks an authorizer you write, and a WebSocket relay.
 
 ```bash
 gantry add my-app --service gateway --set upstream=http://localhost:8080   # your app's base URL, no path
 gantry start my-app
 curl localhost:8090/health                                                 # GATEWAY_URL, proxied to the upstream
 ```
+
+REST and WebSocket share the port: a request with `Upgrade: websocket`, on any path, is a WebSocket connection
+(`GATEWAY_WS_URL`, `ws://localhost:8090`); everything else is REST. Like an AWS API Gateway, the backend decides what
+to push and the frontend what to listen to; see [WebSocket](#websocket).
 
 Out of the box the gateway is a **transparent proxy**: every request goes to `upstream` and nobody is asked to log
 in. `localhost` in any URL means your machine (it is reached through the Docker host). gantry-auth runs from
@@ -361,7 +424,7 @@ gantry gateway reload my-app                        # after editing ~/.gantry/ap
 A hand edit of the file takes effect only once it is applied, with `gantry gateway reload` (or `config --file`):
 until then the gateway keeps running the config it last applied, and a file with problems is never applied.
 
-In the dashboard, the **REST API Gateway** page's **Config** tab shows the same file as a form: routes, logins, user
+In the dashboard, the **API Gateway** page's **Config** tab shows the same file as a form: routes, logins, user
 lookups and headers as plain fields, with a filter for long route lists. **Edit as YAML** opens the text instead.
 Saving from the form rewrites the file, so its comments are dropped. An example using most of it:
 
@@ -434,9 +497,8 @@ log:
 
 - **Routes.** A route `name` uses letters, digits, `.`, `_` and `-` (at most 64); `path` starts with `/`; `host` is a
   host name, optionally starting with `*.`. `auth` is `public`, `deny`, or the name of an authorizer. `upstream` on a route sends it elsewhere;
-  `default` takes `auth`, `steps`, `headers` and `upstream` too. Every route streams responses (SSE) unbuffered and
-  passes WebSocket upgrades through; on a protected route the authorizer checks the handshake (browsers can't set
-  headers on one, so use `tokenFrom: query:<name>` there).
+  `default` takes `auth`, `steps`, `headers` and `upstream` too. Every route streams responses (SSE) unbuffered.
+  The names `default` and `websocket` are reserved.
 - **Authorizers.** Every type takes `tokenFrom` (`header:Authorization`, the default, or `query:<name>`),
   `onUnverifiedEmail` (`deny` or `continue:<code>`), `denyStatus` (default 403) and `missingTokenStatus` (both
   400-599).
@@ -533,12 +595,53 @@ headers the route, or the top-level `headers`, names are copied onto it. **Anyth
 If the authorizer can't be reached, the request is refused with 503. Each template's README has the details and a
 way to try it on its own.
 
+### WebSocket
+
+Every app with a gateway takes WebSocket connections on the gateway's port, at any path: a local
+[API Gateway WebSocket API](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-websocket-api.html).
+The `websocket:` block of `gateway.yml` holds what the deployed API's routes, authorizer and integrations hold:
+
+```yaml
+authorizers:
+  fb-ws:
+    type: firebase
+    projectId: my-firebase-project
+    tokenFrom: query:token          # browsers can't set headers on a handshake: ws://localhost:8090?token=<id token>
+
+websocket:
+  auth: fb-ws                       # the $connect authorizer: public (the default), deny, or an authorizer
+  steps: [user]
+  headers:
+    x-user-id: "{{userId}}"         # sent to every integration, like an authorizer context mapped to a header
+  connect: "{{upstream}}/ws/connect/{{connectionId}}"        # $connect, POST; a non-2xx answer refuses the socket
+  disconnect: "{{upstream}}/ws/disconnect/{{connectionId}}"  # $disconnect, DELETE, whatever closed the socket
+  routeSelection: $request.body.action                       # the route selection expression (the default)
+  routes:
+    sendMessage: "{{upstream}}/ws/messages/{{connectionId}}" # a client message with "action": "sendMessage", POSTed as is
+    $default: "{{upstream}}/ws/other/{{connectionId}}"       # any other message
+```
+
+- Each integration is an HTTP call to your app (API Gateway's HTTP integration), with the handshake's headers.
+  Without a matching route or `$default`, the client gets `{"message": "Forbidden", ...}`, as from API Gateway.
+- Your app pushes through the **API Gateway Management API** at `GATEWAY_WS_MANAGEMENT_URL`, so an AWS SDK's
+  `ApiGatewayManagementApi` client works unchanged with its endpoint set there: `POST /@connections/{id}` sends the
+  body to the client as is, `GET` describes the connection, `DELETE` closes it; a closed connection answers
+  `410 GoneException`. Calls need an `Authorization` header (an SDK always signs), which is not checked.
+- API Gateway's limits apply: 32 KB frames, 128 KB messages, 10 minutes idle and 2 hours per connection.
+- Anything an app keeps per connection, such as which user or topics it belongs to, is the app's to store, as it is
+  on AWS; the `dynamodb` service is there for apps that use DynamoDB for it.
+- `GET /connections` and `GET /events` on the management port, `gantry gateway sockets`, and the dashboard's
+  **Sockets** tab show open connections and what happened on them.
+
 ### Call log
 
 Every call through the gateway is logged with its request and response (headers and bodies) and the auth decision.
 
-- In the dashboard, the **REST API Gateway** page's **Calls** tab lists them live, filters by status and path, and opens
-  each call; **Clear** empties the log. The **Authorizers** tab lists pushed authorizers.
+- In the dashboard, the **API Gateway** page's **Calls** tab lists them live, filters by status and path, and opens
+  each call; **Clear** empties the log. The **Sockets** tab shows open WebSocket connections and their
+  recent events (connect, rejected, message, post, gone, disconnect). The **Authorizers** tab lists pushed
+  authorizers.
+- `gantry gateway sockets my-app [--limit N]` prints the open connections and recent socket events.
 - `gantry gateway calls my-app [--limit N] [--status 4xx|404] [--path /api/**] [-f]` prints them as a table;
   `-f` keeps printing new ones. `gantry gateway clear my-app` empties the log; new calls keep being recorded.
 - Coding agents connected with `gantry mcp install` get a second tool, `get_gateway_calls`, with the same filters,
@@ -567,11 +670,12 @@ gantry mcp status                # which apps this repo's agents are connected t
 gantry mcp uninstall my-app      # remove exactly what install added
 ```
 
-Each agent gets an MCP server (`gantry mcp serve my-app`, started by the agent) with one read-only tool,
+Each agent gets an MCP server (`gantry mcp serve my-app`, started by the agent) with a read-only tool,
 `get_connection_details`. It returns every service's state, host, ports and env variables (under your `envmap`
 names), the queues with their dead-letter queues, and Kafka topics, read live each time, so ports, new services and
 renamed variables are always current. The agent then connects with its own tools (`psql`, `aws`, `redis-cli`, ...).
-Sync sources (stage credentials) are never shared.
+Sync sources (stage credentials) are never shared. An app with a gateway also gets `get_gateway_calls` (see
+[Call log](#call-log)), and one with a Postgres or MySQL query log `get_db_queries` (see [Query log](#query-log)).
 
 The setup is personal to your machine and is never committed:
 
@@ -612,8 +716,11 @@ gantry export <app> [-o FILE]
 gantry import <file> [--as NAME] [--set service.option=v ...] [--source service.field=v ...] [--repo NAME=PATH] [-y]
 gantry sync <app> [--service postgres|mysql] [--table T ...] [--source field=v ...] [-y]   replaces local data (or just tables T) with the source's
 gantry destroy <app> [-y]                      deletes data volumes
+gantry db queries <app> [service] [--search TEXT] [--since WHEN] [--from T] [--to T] [--limit N] [-f]
+gantry db clear <app> [service]                empties the query log
 gantry gateway calls <app> [--limit N] [--status 4xx|404] [--path GLOB] [-f]
 gantry gateway clear <app>                     empties the call log
+gantry gateway sockets <app> [--limit N]       open WebSocket connections and recent socket events
 gantry gateway config <app> [--file PATH]      prints gateway.yml, or checks and saves a file
 gantry authorizer init <name> --lang node|python|go [--dir PATH]
 gantry authorizer push <app> <name> <dir>

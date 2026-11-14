@@ -60,7 +60,7 @@ class GatewayEndToEndTest {
     private val app = "gwe2e-" + List(6) { ('a'..'z').random() }.joinToString("")
     private val work: Path = Path.of("build", "gateway-e2e", app).toAbsolutePath()
     private val lib: Path = Path.of("build", "install", "gantry", "lib").toAbsolutePath()
-    private val engine by lazy { Engine(home = work.resolve("home"), gatewayLib = lib) }
+    private val engine by lazy { Engine(home = work.resolve("home"), runtimeLib = lib) }
     private val key: RSAKey = RSAKeyGenerator(2048).keyID("e2e").generate()
     private val http: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()
     private val echoPort = freePort()

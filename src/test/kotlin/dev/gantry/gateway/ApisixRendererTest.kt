@@ -17,13 +17,21 @@ import kotlin.test.assertTrue
 class ApisixRendererTest {
     private val ctx = RenderContext(app = "citadel", defaultUpstream = "http://localhost:8080")
 
-    private fun routes(
+    private fun allRoutes(
         config: GatewayConfig,
         context: RenderContext = ctx,
     ): List<YamlMap> {
         val root = Yaml.default.parseToYamlNode(renderApisixRoutes(config, context)) as YamlMap
         return (root.get<YamlList>("routes")!!).items.map { it as YamlMap }
     }
+
+    /** The HTTP routes, without the WebSocket handshake route that always comes first. */
+    private fun routes(
+        config: GatewayConfig,
+        context: RenderContext = ctx,
+    ): List<YamlMap> = allRoutes(config, context).filter { it.get<YamlScalar>("id")!!.content != WEBSOCKET_ROUTE }
+
+    private fun socketRoute(config: GatewayConfig): YamlMap = allRoutes(config).first()
 
     private fun YamlNode.str(): String = (this as YamlScalar).content
 
@@ -570,10 +578,54 @@ class ApisixRendererTest {
 
     @Test
     fun `a config without shared headers renders as pinned`() {
-        // Byte-identical to the renderer before shared headers, except one intended change: a route that needs a
-        // login lists the strip headers in upstream_headers too, not only its own.
+        // Byte-identical to the renderer before shared headers, except two intended changes: a route that needs a
+        // login lists the strip headers in upstream_headers too, not only its own; and the WebSocket route comes first.
         fun fixture(name: String) = ApisixRendererTest::class.java.getResource("/gateway/$name")!!.readText()
         assertEquals(fixture("golden-apisix.yaml"), renderApisixRoutes(config(fixture("golden-gateway.yml")), ctx))
+    }
+
+    @Test
+    fun `websocket handshakes on any path go to the relay before every route`() {
+        val all = allRoutes(config(protectedYml))
+        val socket = socketRoute(config(protectedYml))
+
+        assertEquals(WEBSOCKET_ROUTE, socket.get<YamlScalar>("id")!!.content)
+        assertTrue(
+            all.drop(1).all { it.get<YamlScalar>("priority")!!.content.toInt() < socket.get<YamlScalar>("priority")!!.content.toInt() },
+        )
+        val vars = (socket.get<YamlList>("vars")!!.items.single() as YamlList).items.map { it.str() }
+        assertEquals(listOf("http_upgrade", "~*", "^websocket$"), vars)
+        assertEquals(
+            listOf("gateway-ws:8080"),
+            socket
+                .map("upstream")!!
+                .map("nodes")!!
+                .entries.keys
+                .map { it.content },
+        )
+        // Without a websocket block, sockets are public.
+        assertNull(socket.plugin("forward-auth"))
+    }
+
+    @Test
+    fun `websocket handshakes use the configured authorizer, steps and headers`() {
+        val socket =
+            socketRoute(
+                config(
+                    protectedYml +
+                        """
+
+                        websocket:
+                          auth: fb
+                          headers:
+                            x-user-id: "{{uid}}"
+                        """.trimIndent(),
+                ),
+            )
+
+        val auth = socket.plugin("forward-auth")!!
+        assertEquals("http://gantry-auth:9100/authorize?route=websocket", auth.get<YamlScalar>("uri")!!.content)
+        assertTrue("x-user-id" in auth.strings("upstream_headers"))
     }
 
     private val sharedYml =

@@ -1,4 +1,41 @@
 "routes":
+  - "id": "websocket"
+    "uri": "/*"
+    "priority": 6
+    "enable_websocket": true
+    "vars":
+      - ["http_upgrade", "~*", "^websocket$"]
+    "upstream":
+      "type": "roundrobin"
+      "scheme": "http"
+      "pass_host": "node"
+      "nodes":
+        "gateway-ws:8080": 1
+    "timeout":
+      "connect": 6
+      "send": 3600
+      "read": 3600
+    "plugins":
+      "request-id":
+        "header_name": "X-Request-Id"
+      "proxy-rewrite":
+        "headers":
+          "remove":
+            - "x-user-id"
+            - "x-gateway-user-email"
+            - "x-internal-api-key"
+            - "x-tenant"
+      "cors":
+        "allow_origins": "http://localhost:3000"
+        "allow_credential": true
+        "allow_methods": "**"
+        "allow_headers": "**"
+        "expose_headers": "x-request-id"
+        "max_age": 600
+      "file-logger":
+        "path": "/gantry-log/calls.log"
+        "include_req_body": true
+        "include_resp_body": true
   - "id": "portal"
     "uri": "/*"
     "methods":

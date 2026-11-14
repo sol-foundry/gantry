@@ -1,13 +1,18 @@
 package dev.gantry.db
 
+import dev.gantry.engine.DIRECT_PORT
 import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
+import dev.gantry.engine.databaseServiceName
 import java.nio.file.Path
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.SQLException
 
-/** How to reach one SQL service of an app from the host, plus where its Flyway migrations live. */
+/**
+ * How gantry's own tools reach one SQL service of an app, from the host and from the app's Docker network
+ * ([networkHost]), plus where its Flyway migrations live. Both bypass the query-log proxy.
+ */
 data class DatabaseTarget(
     val app: String,
     val service: String,
@@ -18,6 +23,7 @@ data class DatabaseTarget(
     val password: String,
     val migrations: Path,
     val migrateOnUp: Boolean,
+    val networkHost: String = service,
 ) {
     fun <T> connect(block: (Connection) -> T): T {
         val connection =
@@ -39,10 +45,15 @@ data class DatabaseTarget(
     }
 
     companion object {
+        /**
+         * The database is on `direct` / `<service>-db` only once `up` has moved it there, whatever app.json says now:
+         * it is re-rendered by `env`, `add` and the dashboard, ahead of the containers. So the live layout decides.
+         */
         fun resolve(
             engine: Engine,
             app: String,
             service: String,
+            running: (container: String) -> Boolean = engine.docker::isRunning,
         ): DatabaseTarget {
             val appState = engine.loadApp(app)
             val id = engine.catalog.resolve(service).id
@@ -50,16 +61,18 @@ data class DatabaseTarget(
             val state = appState.service(id) ?: throw GantryException("app '$app' has no $id service")
             val options = engine.serviceOptions(appState, id)
             val database = options.getValue("name")
+            val proxied = DIRECT_PORT in state.ports && running("$app-${databaseServiceName(id, true)}")
             return DatabaseTarget(
                 app = app,
                 service = id,
                 dialect = dialect,
-                jdbcUrl = dialect.jdbcUrl(state.ports.getValue("main"), database),
+                jdbcUrl = dialect.jdbcUrl(state.ports.getValue(if (proxied) DIRECT_PORT else "main"), database),
                 database = database,
                 user = options.getValue("user"),
                 password = options.getValue("password"),
                 migrations = Path.of(options.getValue("migrations")),
                 migrateOnUp = options["migrate_on_up"] == "true",
+                networkHost = databaseServiceName(id, proxied),
             )
         }
 

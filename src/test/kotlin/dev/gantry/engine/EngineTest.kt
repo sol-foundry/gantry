@@ -23,7 +23,7 @@ const val NO_DOCKER = "gantry-test-no-docker"
 
 class EngineTest {
     private val home: Path = Files.createTempDirectory("gantry-test")
-    private val engine = Engine(home = home, dockerCommand = NO_DOCKER)
+    private val engine = Engine(home = home, dockerCommand = NO_DOCKER, runtimeLib = TEST_RUNTIME_LIB)
 
     private fun env(app: String) = engine.env(engine.loadApp(app)).toMap()
 
@@ -66,20 +66,23 @@ class EngineTest {
             "elasticmq",
             "temporal",
             "kafka",
-            "websocket",
+            "dynamodb",
         ).forEach { assertTrue(it in e.message!!, "lists $it") }
     }
 
     @Test
-    fun `the gateway needs an installed gantry to stage its auth runtime`() {
-        // Tests run from build/classes, where there is no lib directory of jars to mount into gantry-auth.
-        engine.create("shop", services = listOf("valkey"))
-        val before = home.resolve("apps/shop/app.json").readText()
+    fun `the gateway and the query log need an installed gantry to stage their runtime`() {
+        // Tests run from build/classes, where there is no lib directory of jars to mount into gantry-auth or a proxy.
+        val uninstalled = Engine(home = Files.createTempDirectory("gantry-uninstalled"), dockerCommand = NO_DOCKER)
+        uninstalled.create("shop", services = listOf("valkey"))
+        val appJson = uninstalled.appDir("shop").resolve("app.json")
+        val before = appJson.readText()
 
-        val e = assertFailsWith<GantryException> { engine.add("shop", "gateway") }
-
-        assertTrue("installed" in e.message!!, e.message)
-        assertEquals(before, home.resolve("apps/shop/app.json").readText())
+        listOf("gateway", "postgres", "mysql").forEach { service ->
+            val e = assertFailsWith<GantryException> { uninstalled.add("shop", service) }
+            assertTrue("installed" in e.message!!, e.message)
+            assertEquals(before, appJson.readText())
+        }
     }
 
     @Test
@@ -195,6 +198,7 @@ class EngineTest {
             home = Files.createTempDirectory("gantry-requires-test"),
             catalog = Catalog(Catalog.load().all().map { if (it.id == "mysql") it.copy(requires = listOf("valkey")) else it }),
             dockerCommand = NO_DOCKER,
+            runtimeLib = TEST_RUNTIME_LIB,
         )
 
     @Test
@@ -298,55 +302,6 @@ class EngineTest {
         }
         assertFailsWith<GantryException> { engine.add("shop", "kafka", mapOf("partitions" to "0")) }
         assertEquals(emptyMap(), engine.loadApp("shop").service("kafka")!!.options)
-    }
-
-    @Test
-    fun `websocket gateway renders its script and publishes its urls`() {
-        engine.create("shop")
-        val port =
-            engine
-                .add("shop", "websocket")
-                .service("websocket")!!
-                .ports
-                .getValue("main")
-
-        assertTrue("server.on('upgrade'" in engine.appDir("shop").resolve("websocket.js").readText())
-        val compose = engine.appDir("shop").resolve("compose.yml").readText()
-        assertTrue("/websocket.js:/app/websocket.js:ro" in compose)
-        assertTrue("container_name: \"shop-websocket\"" in compose)
-        assertEquals("http://localhost:$port", env("shop")["WEBSOCKET_URL"])
-        assertEquals("ws://localhost:$port/ws", env("shop")["WEBSOCKET_WS_URL"])
-    }
-
-    @Test
-    fun `apps saved with the realtime service are upgraded to websocket and keep its port and env renames`() {
-        engine.create("shop", services = listOf("websocket"))
-        engine.setEnvNames("shop", mapOf("WEBSOCKET_URL" to "RELAY_URL"))
-        val file = home.resolve("apps/shop/app.json")
-        // What an older gantry saved: the service under its old id, a rename keyed by the old variable.
-        file.writeText(file.readText().replace("\"websocket\"", "\"realtime\"").replace("\"WEBSOCKET_URL\"", "\"REALTIME_URL\""))
-        engine.updatePorts {
-            it.remove("shop/websocket/main")
-            it["shop/realtime/main"] = 8092
-        }
-
-        assertEquals(listOf("websocket"), engine.readApp("shop").services.map { it.id })
-        val app = engine.loadApp("shop")
-
-        assertEquals(listOf("websocket"), app.services.map { it.id })
-        assertEquals(8092, app.service("websocket")!!.ports["main"])
-        assertEquals(mapOf("WEBSOCKET_URL" to "RELAY_URL"), app.envNames)
-        assertTrue("\"realtime\"" !in file.readText())
-        assertTrue("shop/realtime/" !in home.resolve("ports.json").readText())
-        assertEquals("http://localhost:8092", env("shop")["RELAY_URL"])
-        assertEquals("ws://localhost:8092/ws", env("shop")["WEBSOCKET_WS_URL"])
-        assertTrue("container_name: \"shop-websocket\"" in engine.appDir("shop").resolve("compose.yml").readText())
-    }
-
-    @Test
-    fun `the old realtime id is still accepted when adding`() {
-        engine.create("shop")
-        assertNotNull(engine.add("shop", "realtime").service("websocket"))
     }
 
     @Test
@@ -545,7 +500,7 @@ class EngineTest {
             java.nio.file.attribute.PosixFilePermissions
                 .fromString("rwx------"),
         )
-        val withVolume = Engine(home = tools.resolve("home"), dockerCommand = docker.toString())
+        val withVolume = Engine(home = tools.resolve("home"), dockerCommand = docker.toString(), runtimeLib = TEST_RUNTIME_LIB)
         withVolume.create("shop", services = listOf("valkey"))
 
         assertEquals("gantry-shop_postgres-data", withVolume.leftoverVolume("shop", "postgres"))
@@ -595,7 +550,8 @@ class TemplateTest {
 }
 
 class ValkeyPersistenceTest {
-    private val engine = Engine(home = Files.createTempDirectory("gantry-persist-test"), dockerCommand = NO_DOCKER)
+    private val engine =
+        Engine(home = Files.createTempDirectory("gantry-persist-test"), dockerCommand = NO_DOCKER, runtimeLib = TEST_RUNTIME_LIB)
 
     private fun compose(app: String) = engine.appDir(app).resolve("compose.yml").readText()
 

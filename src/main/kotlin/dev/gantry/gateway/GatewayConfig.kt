@@ -59,7 +59,31 @@ data class GatewayConfig(
     /** Headers removed from every incoming request before anything else happens. */
     val stripHeaders: List<String> = DEFAULT_STRIP,
     val log: LogSettings = LogSettings(),
+    /** WebSocket handshakes (any path with `Upgrade: websocket`); without it sockets are public and nothing is called. */
+    val websocket: WebSocketConfig = WebSocketConfig(),
 )
+
+/**
+ * How the gateway treats WebSocket clients, like an API Gateway WebSocket API: the handshake is authorized like a
+ * route, then the [connect] integration (POST) and later [disconnect] (DELETE) are called with the handshake's
+ * headers; a connect that fails refuses the socket. A client message goes (POST, as its body) to the route its
+ * [routeSelection] value names in [routes], else to `$default`. Every URL may use `{{upstream}}` and
+ * `{{connectionId}}`.
+ */
+@Serializable
+data class WebSocketConfig(
+    val auth: String = "public",
+    val steps: List<String> = emptyList(),
+    val headers: Map<String, String> = emptyMap(),
+    val connect: String? = null,
+    val disconnect: String? = null,
+    /** `$request.body.<field>`, a field of the client's JSON message, like API Gateway's route selection expression. */
+    val routeSelection: String = DEFAULT_ROUTE_SELECTION,
+    /** Route key (or `$default`) to the integration URL its messages are POSTed to. */
+    val routes: Map<String, String> = emptyMap(),
+)
+
+internal const val DEFAULT_ROUTE_SELECTION = "\$request.body.action"
 
 /**
  * The headers [route] sends to the app: the shared [GatewayConfig.headers] with the route's own on top. Names match
@@ -69,6 +93,9 @@ fun GatewayConfig.headersFor(route: Route): Map<String, String> = mergeHeaders(h
 
 /** The headers the default action sends to the app, like [headersFor] a route. */
 fun GatewayConfig.defaultHeaders(): Map<String, String> = mergeHeaders(headers, default.headers)
+
+/** The headers a WebSocket handshake carries to the relay and its connect hooks, like [headersFor] a route. */
+fun GatewayConfig.websocketHeaders(): Map<String, String> = mergeHeaders(headers, websocket.headers)
 
 private fun mergeHeaders(
     shared: Map<String, String>,
@@ -354,8 +381,8 @@ fun GatewayConfig.validate(): List<String> {
         .filterValues { it.size > 1 }
         .keys
         .forEach { problems += "route '$it' is defined more than once" }
-    // The catch-all APISIX route already has the id `default`.
-    if (routes.any { it.name == "default" }) problems += "route name 'default' is reserved"
+    // The catch-all APISIX route already has the id `default`, and the WebSocket one `websocket`.
+    routes.filter { it.name in RESERVED_ROUTE_NAMES }.forEach { problems += "route name '${it.name}' is reserved" }
     routes.forEach { route ->
         val label = "route '${route.name}'"
         if (!ROUTE_NAME.matches(route.name)) problems += "$label: name may only use letters, digits, '.', '_' and '-' (at most 64)"
@@ -375,8 +402,38 @@ fun GatewayConfig.validate(): List<String> {
         checkAction(label, route.auth, route.steps)
     }
     checkAction("default", default.auth, default.steps)
+    checkAction("websocket", websocket.auth, websocket.steps)
+    if (!ROUTE_SELECTION.matches(websocket.routeSelection)) problems += "websocket.routeSelection: must be \$request.body.<field>"
+    websocket.routes.keys
+        .filter { it.isBlank() }
+        .forEach { _ -> problems += "websocket.routes: a route key may not be blank" }
+    (
+        listOf("connect" to websocket.connect, "disconnect" to websocket.disconnect) +
+            websocket.routes.map { (key, url) -> "routes.$key" to url }
+    ).filter { it.second != null }
+        .forEach { (hook, url) ->
+            val unknown =
+                PLACEHOLDER
+                    .findAll(url!!)
+                    .map { it.groupValues[1] }
+                    .filter { it !in HOOK_PLACEHOLDERS }
+                    .toList()
+            if (unknown.isNotEmpty()) {
+                problems +=
+                    "websocket.$hook: only {{upstream}} and {{connectionId}} may be used, not ${unknown.joinToString { "{{$it}}" }}"
+            }
+            if (!HOOK_URL.matches(url)) problems += "websocket.$hook: must be an http(s) URL"
+        }
     return problems
 }
+
+/** Route names the renderer uses for its own APISIX routes. */
+internal const val WEBSOCKET_ROUTE = "websocket"
+private val RESERVED_ROUTE_NAMES = setOf("default", WEBSOCKET_ROUTE)
+private val PLACEHOLDER = Regex("\\{\\{([^}]*)}}")
+private val HOOK_PLACEHOLDERS = setOf("upstream", "connectionId")
+private val HOOK_URL = Regex("^(https?://|\\{\\{upstream}}).+")
+private val ROUTE_SELECTION = Regex("^\\\$request\\.body\\.[A-Za-z0-9_.-]+$")
 
 private fun Authorizer.problems(
     label: String,

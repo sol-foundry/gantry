@@ -1,5 +1,6 @@
 package dev.gantry.db
 
+import dev.gantry.dblog.GANTRY_CLIENT
 import dev.gantry.engine.Docker
 import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
@@ -595,7 +596,7 @@ internal fun tableCopyScript(
     val script =
         when (dialect) {
             Dialect.Postgres -> {
-                val local = "-h postgres -p 5432 -U ${shq(target.user)} -d $db"
+                val local = "-h ${target.networkHost} -p 5432 -U ${shq(target.user)} -d $db"
                 listOf(
                     "set -eu",
                     "set -o pipefail",
@@ -626,7 +627,7 @@ internal fun tableCopyScript(
             }
 
             Dialect.MySql -> {
-                val local = "--defaults-extra-file=/tmp/local.cnf -h mysql -P 3306 -u root"
+                val local = "--defaults-extra-file=/tmp/local.cnf -h ${target.networkHost} -P 3306 -u root"
                 val sqlString = { value: String -> "'" + value.replace("\\", "\\\\").replace("'", "''") + "'" }
                 listOf(
                     "set -euo pipefail",
@@ -751,7 +752,7 @@ internal fun copyScript(
     val script =
         when (dialect) {
             Dialect.Postgres -> {
-                val local = "-h postgres -p 5432 -U ${shq(target.user)}"
+                val local = "-h ${target.networkHost} -p 5432 -U ${shq(target.user)}"
                 listOf(
                     "set -eu",
                     "set -o pipefail",
@@ -769,7 +770,7 @@ internal fun copyScript(
             }
 
             Dialect.MySql -> {
-                val local = "--defaults-extra-file=/tmp/local.cnf -h mysql -P 3306 -u root"
+                val local = "--defaults-extra-file=/tmp/local.cnf -h ${target.networkHost} -P 3306 -u root"
                 val user = "'" + target.user.replace("\\", "\\\\").replace("'", "''") + "'"
                 val quoted = Dialect.MySql.quote(target.database)
                 val recreate = "DROP DATABASE IF EXISTS $quoted; CREATE DATABASE $quoted; GRANT ALL ON $quoted.* TO $user@'%'"
@@ -806,9 +807,11 @@ private fun sourceUrl(
     val host = if (':' in source.host && !source.host.startsWith("[")) "[${source.host}]" else source.host
     val database = URLEncoder.encode(source.database, Charsets.UTF_8).replace("+", "%20")
     return when (dialect) {
-        Dialect.Postgres -> "jdbc:postgresql://$host:${source.port}/$database?connectTimeout=5&socketTimeout=30"
+        Dialect.Postgres ->
+            "jdbc:postgresql://$host:${source.port}/$database?connectTimeout=5&socketTimeout=30&ApplicationName=$GANTRY_CLIENT"
         Dialect.MySql ->
-            "jdbc:mysql://$host:${source.port}/$database?connectTimeout=5000&socketTimeout=30000&allowPublicKeyRetrieval=true&$MYSQL_SAFE"
+            "jdbc:mysql://$host:${source.port}/$database?connectTimeout=5000&socketTimeout=30000&allowPublicKeyRetrieval=true&" +
+                "$MYSQL_SAFE&$MYSQL_CLIENT"
     }
 }
 

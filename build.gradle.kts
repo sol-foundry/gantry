@@ -42,6 +42,7 @@ dependencies {
     implementation(libs.kaml)
     implementation(libs.snakeyaml.engine)
     implementation(libs.nimbus.jose.jwt)
+    implementation(libs.bcpkix)
     implementation(libs.postgres)
     implementation(libs.mysql)
     implementation(libs.flyway.core)

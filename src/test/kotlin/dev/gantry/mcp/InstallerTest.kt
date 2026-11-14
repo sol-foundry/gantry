@@ -3,6 +3,7 @@ package dev.gantry.mcp
 import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
 import dev.gantry.engine.NO_DOCKER
+import dev.gantry.engine.TEST_RUNTIME_LIB
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -10,7 +11,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class InstallerTest {
-    private val engine = Engine(home = Files.createTempDirectory("gantry-mcp-test"), dockerCommand = NO_DOCKER)
+    private val engine =
+        Engine(home = Files.createTempDirectory("gantry-mcp-test"), dockerCommand = NO_DOCKER, runtimeLib = TEST_RUNTIME_LIB)
     private val ws = Workspace(Files.createTempDirectory("gantry-project"), null)
 
     /** Records what it was asked to do and reports the apps it holds. */

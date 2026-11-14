@@ -3,6 +3,7 @@ import type {
   AppSummary,
   Catalog,
   DatabaseInfo,
+  DbQuery,
   DdlRequest,
   DdlResult,
   EnvResponse,
@@ -24,6 +25,7 @@ import type {
   ServiceChange,
   SourceInfo,
   SourceSettings,
+  SocketStatus,
   SqlService,
   SyncJob,
   TableDetail,
@@ -81,6 +83,7 @@ export const api = {
 
   gatewayCalls: (name: string, filter: { status?: string; path?: string; limit?: number }) =>
     get<GatewayCall[]>(`${app(name)}/gateway/calls?${qs(filter)}`),
+  gatewaySockets: (name: string) => get<SocketStatus>(`${app(name)}/gateway/sockets`),
   clearGatewayCalls: (name: string) => request<{ ok: boolean }>("DELETE", `${app(name)}/gateway/calls`),
   gatewayConfig: (name: string) => get<{ text: string }>(`${app(name)}/gateway/config`),
   saveGatewayConfig: (name: string, text: string) => request<{ ok: boolean }>("PUT", `${app(name)}/gateway/config`, { text }),
@@ -107,6 +110,9 @@ function dbApi(base: string) {
   const table = (schema: string, name: string) => qs({ schema, name });
   return {
     info: () => get<DatabaseInfo>(`${base}/info`),
+    queries: (filter: { search?: string; from?: string; to?: string; limit?: number }) => get<DbQuery[]>(`${base}/queries?${qs(filter)}`),
+    query: (id: string) => get<DbQuery>(`${base}/queries/${encodeURIComponent(id)}`),
+    clearQueries: () => request<{ ok: boolean }>("DELETE", `${base}/queries`),
     table: (schema: string, name: string) => get<TableDetail>(`${base}/table?${table(schema, name)}`),
     rows: (schema: string, name: string, q: RowsQuery) => get<RowsPage>(`${base}/rows?${table(schema, name)}&${qs({ ...q })}`),
     insert: (schema: string, name: string, values: Record<string, string | null>) =>

@@ -1,5 +1,6 @@
 package dev.gantry.mcp
 
+import dev.gantry.engine.DIRECT_PORT
 import dev.gantry.engine.DockerState
 import dev.gantry.engine.Engine
 import dev.gantry.engine.parseQueues
@@ -80,7 +81,8 @@ fun connectionDetails(
                 state = if (live == null) "unknown" else live[state.id]?.first?.ifEmpty { null } ?: "not created",
                 health = live?.get(state.id)?.second ?: "",
                 host = "localhost",
-                ports = state.ports,
+                // The database's direct port bypasses the query log; agents use main like the app.
+                ports = state.ports - DIRECT_PORT,
                 env = env[state.id].orEmpty().toMap(),
                 connection = connection[state.id].orEmpty().toMap(),
                 omitted = entries.filter { it.service == state.id && it.omitted }.map { it.key },

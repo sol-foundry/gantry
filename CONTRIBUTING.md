@@ -23,6 +23,17 @@ rather than `./gradlew run` when trying `gantry mcp install`: agent entries poin
 cd web && npm run dev       # UI hot reload on :5173; run `gantry dashboard` alongside it
 ```
 
+Turn on the repo's git hooks once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+They reject commit messages that credit an AI tool (a `Co-Authored-By` trailer with a `noreply@` or `[bot]`
+address, a `*-Session:` trailer, a "Generated with [...]" line): `commit-msg` when you commit, and `pre-push` for
+commits made by rebase, cherry-pick or `--no-verify`. With extra worktrees, use the absolute path of one checkout's
+`.githooks`, since a relative path resolves inside each worktree.
+
 Under `npm run dev` the dashboard also shows the [Agentation](https://agentation.com) toolbar (bottom-right): click
 elements to annotate them and copy the notes for a coding agent. It is a dev dependency and never ships in the
 built dashboard.
@@ -91,7 +102,8 @@ src/main/kotlin/dev/gantry/
   db/         SQL dialects (Postgres, MySQL), database explorer, Flyway migrations
   server/     dashboard JSON API (Ktor), queue explorer
   mcp/        agent access: stdio MCP server, connection details, per-agent config
-  gateway/    REST API gateway: gateway.yml model, APISIX renderer, call log, custom authorizers
+  gateway/    API gateway: gateway.yml model, APISIX renderer, call log, WebSocket relay client, custom authorizers
+  dblog/      database query log: Postgres and MySQL proxies, log writer and reader
   auth/       gantry-auth, the gateway's token verifier (runs in a container)
 src/main/resources/
   catalog/    one directory per service (service.json + services.yml)
@@ -136,9 +148,9 @@ A new SQL database also needs a `Dialect` in `db/Dialect.kt` (quoting, catalog q
 JDBC driver and Flyway database module in `build.gradle.kts`; the explorer, row editing and migrations then work
 unchanged. It must expose `name`, `user`, `password` and `migrations` options and a `main` port.
 
-## REST API gateway
+## API gateway
 
-The `gateway` service is a catalog entry like any other, plus two parts the catalog can't express:
+The `gateway` service is a catalog entry like any other, plus three parts the catalog can't express:
 
 - **The renderer** (`gateway/`). `gateway.yml` is parsed and validated by `GatewayConfig.kt`; `ApisixRenderer.kt`
   turns it into APISIX's standalone `apisix.yaml` through the `{{@apisix_routes}}` computed block, and
@@ -149,6 +161,15 @@ The `gateway` service is a catalog entry like any other, plus two parts the cata
   image of its own: it runs `dev.gantry.auth.AuthServerKt` in a stock JRE container from a copy of Gantry's jars,
   staged under `~/.gantry/runtime` (`GatewayRuntime`), so the gateway only works from an installed build
   (`./gradlew installDist`). It reloads `gateway.yml` and the secrets file when they change.
+- **The WebSocket API** (`catalog/gateway/websocket.js.tmpl`), a zero-dependency Node script in the `gateway-ws`
+  container that behaves like an API Gateway WebSocket API: `$connect`/`$disconnect` and route integrations, the
+  `@connections` management API, AWS's error shapes and limits. The renderer adds a highest-priority APISIX route on
+  `Upgrade: websocket` (any path) that runs the `websocket:` block's auth and sends the socket to its :8080; the
+  management API is its :8081, the only port published. After each render the engine writes
+  `websocket/hooks.json` (the integration URLs, `{{upstream}}` resolved for the container), which the script reads
+  per use. The script is a template, so it must not contain `{{`; `WebSocketRelay.kt` reads its connections and
+  events for the CLI and the dashboard. The old `realtime` and `websocket` catalog services fold into the gateway
+  on load (`LEGACY_SERVICE_IDS`).
 
 Custom authorizers are scaffolded from `src/main/resources/authorizer-templates/<lang>/`; a template's README is
 its contract, and `AuthorizersTest` checks each template mentions it.
@@ -163,6 +184,28 @@ GANTRY_E2E=1 ./gradlew test -PskipWeb --tests 'dev.gantry.gateway.GatewayEndToEn
 With `GANTRY_E2E=1` the test task runs `installDist` first, since gantry-auth runs from the installed jars. The test
 makes a throwaway app under `build/gateway-e2e/` on free ports, with a small Python upstream next to it, and removes
 the app, its containers and network and the authorizer image it built when it finishes. It takes about a minute.
+
+## Database query log
+
+The query-log proxy (`dblog/`) runs `dev.gantry.dblog.QueryLogServerKt` in a stock JRE container per Postgres or
+MySQL service, from the same staged jars as gantry-auth, so it too needs an installed build. The `{{@query_log_proxy}}`
+and `{{@db_service_name}}` computed blocks (`engine/QueryLogBlocks.kt`) put the proxy on the service's name and `main`
+port and move the database to `<service>-db` and `direct`. `dblog/postgres/` and `dblog/mysql/` follow each wire
+protocol (`PgSession`, `MySession`) and turn what passes into `QueryEntry`s; the proxy is the only writer of its log
+file, so `clear` empties it from inside the container.
+
+Its unit tests feed sessions hand-built protocol messages and run the proxies against scripted fake servers; they
+never start containers. The end-to-end test runs the proxies in front of real
+Postgres and MySQL and is opt-in like the gateway's:
+
+```bash
+GANTRY_E2E=1 ./gradlew test -PskipWeb --tests 'dev.gantry.dblog.QueryLogEndToEndTest'   # needs Docker
+```
+
+It makes a throwaway app (`dblog-e2e-<random>`) with its own gantry home under `build/dblog-e2e/` and free ports,
+connects through the proxies with JDBC over TLS and in plaintext (prepared statements, a cancelled query, `COPY`,
+`LISTEN`/`NOTIFY`, cursors, errors, a result past the row cap), checks the log through the reader, the CLI and the
+API, and removes the app, its containers, volumes and network when it finishes. It takes under a minute.
 
 ## Dashboard UI
 

@@ -153,6 +153,29 @@ export function ConfigForm({ app, form, setForm }: { app: string; form: FormStat
         />
       </Section>
 
+      <Section title="WebSocket connections">
+        <AccessFields
+          value={form.websocket}
+          authorizers={authorizers}
+          steps={steps}
+          onChange={(patch) => setForm((s) => ({ ...s, websocket: { ...s.websocket, ...patch } }))}
+        />
+        <TextField
+          label="Connect hook"
+          value={form.websocket.connect}
+          placeholder="{{upstream}}/realtime/connect/{{connectionId}}"
+          onChange={(connect) => setForm((s) => ({ ...s, websocket: { ...s.websocket, connect } }))}
+          help="The $connect integration: POSTed the handshake's headers when a socket opens; a non-2xx answer refuses it. Blank: none."
+        />
+        <TextField
+          label="Disconnect hook"
+          value={form.websocket.disconnect}
+          placeholder="{{upstream}}/realtime/disconnect/{{connectionId}}"
+          onChange={(disconnect) => setForm((s) => ({ ...s, websocket: { ...s.websocket, disconnect } }))}
+          help="The $disconnect integration: called with DELETE when a socket closes. Message routes are edited in YAML."
+        />
+      </Section>
+
       <Authorizers app={app} authorizers={form.authorizers} setForm={setForm} />
       <Steps steps={form.steps} setForm={setForm} />
       <CorsSection form={form} setForm={setForm} />

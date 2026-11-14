@@ -18,7 +18,7 @@ import kotlin.test.assertTrue
 class AuthorizersTest {
     private val home: Path = Files.createTempDirectory("gantry-authorizers")
     private val lib: Path = Files.createTempDirectory("gantry-lib").also { it.resolve("gantry.jar").writeText("jar") }
-    private val engine = Engine(home = home, dockerCommand = NO_DOCKER, gatewayLib = lib)
+    private val engine = Engine(home = home, dockerCommand = NO_DOCKER, runtimeLib = lib)
     private val docker = FakeDocker()
     private val authorizers = Authorizers(engine, docker)
     private val appDir get() = engine.appDir("shop")
@@ -157,9 +157,9 @@ class AuthorizersTest {
             assertContains(text, "env_file:\n      - \"$appDir/auth-$name.env\"")
         }
         assertEquals(2, Regex("expose:\n      - \"8080\"").findAll(text).count())
-        // apisix and gantry-auth, plus one per authorizer.
-        assertEquals(4, Regex("host.docker.internal:host-gateway").findAll(text).count())
-        assertEquals(4, Regex("restart: unless-stopped").findAll(text).count())
+        // apisix, gantry-auth and the WebSocket relay, plus one per authorizer.
+        assertEquals(5, Regex("host.docker.internal:host-gateway").findAll(text).count())
+        assertEquals(5, Regex("restart: unless-stopped").findAll(text).count())
         assertFalse("{{" in text)
     }
 

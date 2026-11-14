@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { DatabaseIcon, DownloadCloudIcon, FileCodeIcon, TerminalSquareIcon } from "lucide-react";
+import { DatabaseIcon, DownloadCloudIcon, FileCodeIcon, ListIcon, TerminalSquareIcon } from "lucide-react";
 import { api } from "@/api";
 import { ErrorAlert } from "@/components/common";
 import { DatabaseOverview } from "@/components/db/DatabaseOverview";
 import { DdlReviewModal, type PendingDdl } from "@/components/db/DdlReviewModal";
 import { type TableRef } from "@/components/db/format";
+import { QueryList } from "@/components/db/QueryList";
 import { MigrationsPanel } from "@/components/db/MigrationsPanel";
 import { NewTableForm } from "@/components/db/NewTableForm";
 import { SqlConsole } from "@/components/db/SqlConsole";
@@ -26,6 +27,7 @@ import type { DdlRequest, SourceInfo, SqlService } from "@/types";
 const PANEL = "flex flex-col";
 
 const SYNC_POLL_MS = 2000;
+const STATUS_POLL_MS = 5000;
 
 /** Postgres / MySQL explorer: browse and edit tables, change the schema, run Flyway migrations, or use SQL. */
 export function DatabasePage({ app, service }: { app: string; service: SqlService }) {
@@ -36,6 +38,9 @@ export function DatabasePage({ app, service }: { app: string; service: SqlServic
   const [refreshKey, setRefreshKey] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const source = useLoad(() => api.db(app, service).source(), [app, service]);
+  // Polled like the app page, so turning the query log on or off elsewhere shows or hides the tab.
+  const status = useLoad(() => api.status(app), [app], STATUS_POLL_MS);
+  const queryLog = status.data?.services.find((s) => s.id === service)?.options.query_log === "true";
   const syncRunning = source.data?.job?.state === "running";
 
   // Follow a running sync (started here, from the CLI, or before a reload) so the button shows it, then refresh once done.
@@ -120,6 +125,12 @@ export function DatabasePage({ app, service }: { app: string; service: SqlServic
             <TerminalSquareIcon />
             SQL
           </TabsTrigger>
+          {queryLog && (
+            <TabsTrigger value="queries">
+              <ListIcon />
+              Queries
+            </TabsTrigger>
+          )}
         </TabsList>
         <TabsContent value="browse" className={PANEL}>
           <div className="grid items-start gap-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
@@ -171,6 +182,11 @@ export function DatabasePage({ app, service }: { app: string; service: SqlServic
         <TabsContent value="sql" className={PANEL}>
           <SqlConsole app={app} service={service} onRan={refresh} />
         </TabsContent>
+        {queryLog && (
+          <TabsContent value="queries" className={PANEL}>
+            <QueryList app={app} service={service} />
+          </TabsContent>
+        )}
       </Tabs>
       {pending && <DdlReviewModal app={app} service={service} pending={pending} onClose={() => setPending(undefined)} onDone={ddlDone} />}
     </>

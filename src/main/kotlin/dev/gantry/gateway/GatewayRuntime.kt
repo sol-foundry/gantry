@@ -12,8 +12,8 @@ import kotlin.io.path.name
 private const val HASH_BYTES = 6
 
 /**
- * The jars gantry-auth runs from. The container mounts a copy under `home/runtime` rather than the install itself,
- * so upgrading or reinstalling gantry never pulls files out from under a running gateway.
+ * The jars gantry-auth and the query-log proxies run from. Containers mount a copy under `home/runtime` rather than
+ * the install itself, so upgrading or reinstalling gantry never pulls files out from under a running one.
  */
 object GatewayRuntime {
     /** This build's version, or `dev` when it runs from build output without a manifest. */
@@ -28,8 +28,8 @@ object GatewayRuntime {
             )
         if (!location.isRegularFile() || !location.name.endsWith(".jar")) {
             throw GantryException(
-                "the gateway runs gantry-auth from gantry's jars, but this gantry is not an installed build " +
-                    "(running from $location); use an installed gantry (./gradlew installDist)",
+                "gantry-auth and the database query log run from gantry's jars, but this gantry is not an installed build " +
+                    "(running from $location); use an installed gantry (./gradlew installDist), or set query_log=false",
             )
         }
         return location.parent

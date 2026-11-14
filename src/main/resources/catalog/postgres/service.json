@@ -7,7 +7,11 @@
     "user": "{{app_id}}",
     "password": "{{app_id}}",
     "migrations": "{{dir}}/migrations/postgres",
-    "migrate_on_up": "false"
+    "migrate_on_up": "false",
+    "query_log": "true",
+    "query_log_max_rows": "1000",
+    "query_log_max_bytes": "1048576",
+    "query_log_max_size": "209715200"
   },
   "option_meta": {
     "name": {
@@ -27,17 +31,32 @@
     "migrate_on_up": {
       "type": "boolean",
       "help": "Run pending Flyway migrations after every `up`."
+    },
+    "query_log": {
+      "type": "boolean",
+      "help": "Record every statement the app sends and what the database answers, through a proxy on the main port. Gantry's own tools use the direct port and are not recorded."
+    },
+    "query_log_max_rows": {
+      "help": "Result rows kept per statement; past it only the total row count is kept."
+    },
+    "query_log_max_bytes": {
+      "help": "Bytes of result data kept per statement; values or rows past it are cut and the entry marked truncated."
+    },
+    "query_log_max_size": {
+      "help": "Bytes the query log may grow to; past it the oldest entries go first."
     }
   },
   "ports": {
-    "main": 5432
+    "main": 5432,
+    "direct": 15432
   },
   "volumes": [
     "postgres-data"
   ],
   "dirs": [
     "initdb",
-    "migrations/postgres"
+    "migrations/postgres",
+    "db-log"
   ],
   "env": {
     "DB_HOST": "localhost",

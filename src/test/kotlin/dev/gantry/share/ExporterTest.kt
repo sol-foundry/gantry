@@ -4,6 +4,7 @@ import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
 import dev.gantry.engine.NO_DOCKER
 import dev.gantry.engine.SourceSettings
+import dev.gantry.engine.TEST_RUNTIME_LIB
 import dev.gantry.gateway.PushedAuthorizer
 import dev.gantry.gateway.saveGatewayConfig
 import java.nio.file.Files
@@ -14,7 +15,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 
 class ExporterTest {
-    private val engine = Engine(home = Files.createTempDirectory("gantry-export"), dockerCommand = NO_DOCKER)
+    private val engine = Engine(home = Files.createTempDirectory("gantry-export"), dockerCommand = NO_DOCKER, runtimeLib = TEST_RUNTIME_LIB)
 
     @Test
     fun `secrets and ports are left out, name and user are pinned`() {
@@ -94,7 +95,7 @@ class ExporterTest {
     @Test
     fun `export includes gateway config and authorizer dirs, never secret values`() {
         val lib = Files.createTempDirectory("gantry-lib").also { Files.writeString(it.resolve("gantry.jar"), "jar") }
-        val engine = Engine(home = Files.createTempDirectory("gantry-export"), dockerCommand = NO_DOCKER, gatewayLib = lib)
+        val engine = Engine(home = Files.createTempDirectory("gantry-export"), dockerCommand = NO_DOCKER, runtimeLib = lib)
         engine.create("shop", services = listOf("gateway"))
         val config = "default:\n  auth: public\n  headers:\n    x-key: \"{{secret:API_KEY}}\"\n"
         assertEquals(emptyList(), engine.saveGatewayConfig("shop", config))

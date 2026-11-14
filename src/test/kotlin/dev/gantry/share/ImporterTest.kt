@@ -6,6 +6,7 @@ import dev.gantry.engine.GantryException
 import dev.gantry.engine.NO_DOCKER
 import dev.gantry.engine.ServiceState
 import dev.gantry.engine.SourceSettings
+import dev.gantry.engine.TEST_RUNTIME_LIB
 import dev.gantry.gateway.PushedAuthorizer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -25,7 +26,7 @@ import kotlin.test.assertTrue
 
 class ImporterTest {
     private val home: Path = Files.createTempDirectory("gantry-import")
-    private val engine = Engine(home = home, dockerCommand = NO_DOCKER)
+    private val engine = Engine(home = home, dockerCommand = NO_DOCKER, runtimeLib = TEST_RUNTIME_LIB)
     private val nobody: Path = Files.createTempDirectory("home")
 
     private fun file(
@@ -136,13 +137,24 @@ class ImporterTest {
     }
 
     @Test
-    fun `a file exported with the realtime service imports as websocket`() {
-        val p = preview(file(services = mapOf("realtime" to ExportedService()), envNames = mapOf("REALTIME_URL" to "RELAY_URL")))
-        assertEquals(setOf("websocket"), p.request.services.keys)
-        assertEquals(mapOf("WEBSOCKET_URL" to "RELAY_URL"), p.request.envNames)
-        val app = Importer(engine).apply(p.request)
-        assertEquals(listOf("websocket"), app.services.map { it.id })
-        assertEquals(mapOf("WEBSOCKET_URL" to "RELAY_URL"), app.envNames)
+    fun `a file exported with the realtime or websocket service imports it as the gateway`() {
+        val p =
+            preview(
+                file(
+                    services = mapOf("websocket" to ExportedService(options = mapOf("version" to "20"))),
+                    envNames = mapOf("REALTIME_URL" to "RELAY_URL"),
+                ),
+            )
+
+        assertEquals(setOf("gateway"), p.request.services.keys)
+        // The websocket service's version was Node's; as the gateway's it would pick an APISIX image.
+        assertNotEquals(
+            "20",
+            p.request.services
+                .getValue("gateway")
+                .options["version"],
+        )
+        assertEquals(mapOf("GATEWAY_WS_MANAGEMENT_URL" to "RELAY_URL"), p.request.envNames)
     }
 
     @Test
@@ -288,7 +300,7 @@ class ImporterTest {
         val docker = home.resolve("fake-docker")
         Files.writeString(docker, "#!/bin/sh\n[ \"\$1 \$2 \$3\" = \"volume inspect gantry-shop_postgres-data\" ]\n")
         Files.setPosixFilePermissions(docker, PosixFilePermissions.fromString("rwx------"))
-        val withVolume = Engine(home = home, dockerCommand = docker.toString())
+        val withVolume = Engine(home = home, dockerCommand = docker.toString(), runtimeLib = TEST_RUNTIME_LIB)
         val p = Importer(withVolume).preview(file(services = mapOf("postgres" to ExportedService())), home = nobody, cwd = nobody)
         assertTrue(p.warnings.single().contains("gantry-shop_postgres-data"))
         assertTrue(p.warnings.single().contains("destroy the app, or set the password option to the volume's old one"))
@@ -310,7 +322,7 @@ class ImporterTest {
     }
 
     private val lib: Path = Files.createTempDirectory("gantry-lib").also { Files.writeString(it.resolve("gantry.jar"), "jar") }
-    private val gatewayEngine = Engine(home = Files.createTempDirectory("gantry-import-gw"), dockerCommand = NO_DOCKER, gatewayLib = lib)
+    private val gatewayEngine = Engine(home = Files.createTempDirectory("gantry-import-gw"), dockerCommand = NO_DOCKER, runtimeLib = lib)
     private val gatewayYml =
         """
         authorizers:

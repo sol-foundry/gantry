@@ -3,11 +3,11 @@ package dev.gantry.share
 import dev.gantry.engine.App
 import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
-import dev.gantry.engine.LEGACY_SERVICE_IDS
 import dev.gantry.engine.ServiceDef
 import dev.gantry.engine.ServiceState
 import dev.gantry.engine.SourceSettings
 import dev.gantry.engine.appNameRule
+import dev.gantry.engine.foldLegacyServices
 import dev.gantry.engine.generateSecret
 import dev.gantry.engine.upgradeEnvNames
 import dev.gantry.gateway.GATEWAY
@@ -90,8 +90,14 @@ class Importer(
         val keptSecrets = mutableListOf<String>()
         val warnings = mutableListOf<String>()
         val guesses = mutableMapOf<String, String>()
+        // A folded service's options mean something else in the service that holds it now, so they are dropped.
+        val exportedServices =
+            foldLegacyServices(
+                file.services.toList(),
+                { it.first },
+            ) { (_, folded), into -> into to folded.copy(options = emptyMap()) }.toMap()
         val services =
-            file.services.mapKeys { (service, _) -> LEGACY_SERVICE_IDS[service] ?: service }.mapValues { (service, exported) ->
+            exportedServices.mapValues { (service, exported) ->
                 // An unknown service is passed through as in the file, for validate() to report.
                 val def =
                     runCatching { engine.catalog.resolve(service) }.getOrNull()

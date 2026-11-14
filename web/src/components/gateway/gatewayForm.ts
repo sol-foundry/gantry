@@ -149,6 +149,14 @@ export interface FormState {
   cors: FormCors;
   stripHeaders: DefaultableList;
   log: { maxCalls: string; maxBodyBytes: string; redact: DefaultableList };
+  /** WebSocket clients; headers, routes and route selection are not on the form and are kept as they came. */
+  websocket: FormAction & {
+    headers: Record<string, string>;
+    connect: string;
+    disconnect: string;
+    routeSelection: string;
+    routes: Record<string, string>;
+  };
   /** Top-level fields the file had as "", see [blanks]. */
   loadedBlank: string[];
   /** Names of authorizers and steps deleted in the form, to say so when a route still uses one. */
@@ -249,6 +257,8 @@ function fromStep(name: string, s: GatewayStep): FormStep {
 }
 
 export function fromConfig(c: GatewayConfig): FormState {
+  // An older server sends no websocket block.
+  const ws = c.websocket ?? { auth: "public", steps: [], headers: {}, connect: null, disconnect: null, routeSelection: "$request.body.action", routes: {} };
   const authorizers = Object.entries(c.authorizers).map(([name, a]) => fromAuthorizer(name, a));
   const steps = Object.entries(c.steps).map(([name, s]) => fromStep(name, s));
   const authorizerIds = new Map(authorizers.map((a) => [a.name, a.id]));
@@ -273,6 +283,14 @@ export function fromConfig(c: GatewayConfig): FormState {
       maxCalls: String(c.log.maxCalls),
       maxBodyBytes: String(c.log.maxBodyBytes),
       redact: defaultable(c.log.redact, DEFAULT_REDACT),
+    },
+    websocket: {
+      ...action(ws.auth, ws.steps, authorizerIds, stepIds),
+      headers: ws.headers,
+      connect: text(ws.connect),
+      disconnect: text(ws.disconnect),
+      routeSelection: ws.routeSelection,
+      routes: ws.routes,
     },
     loadedBlank: blanks(c, ["upstream"]),
     deleted: { authorizers: [], steps: [] },
@@ -523,6 +541,14 @@ export function toConfig(s: FormState): Converted {
       maxBodyBytes: int(s.log.maxBodyBytes, "call log max body bytes"),
       redact: s.log.redact.useDefault ? DEFAULT_REDACT : list(s.log.redact.items, "call log hidden headers"),
     },
+    websocket: {
+      ...resolve(s.websocket, "WebSocket connections"),
+      headers: s.websocket.headers,
+      connect: s.websocket.connect.trim() === "" ? null : s.websocket.connect.trim(),
+      disconnect: s.websocket.disconnect.trim() === "" ? null : s.websocket.disconnect.trim(),
+      routeSelection: s.websocket.routeSelection,
+      routes: s.websocket.routes,
+    },
   };
   // A clash between two names is found from both sides; say it once.
   return { config, problems: [...new Set(problems)] };
@@ -551,6 +577,7 @@ export function removeNamed(s: FormState, kind: "authorizer" | "step", id: numbe
     steps: kind === "step" ? s.steps.filter((x) => x.id !== id) : s.steps,
     routes: s.routes.map(forget),
     default: forget(s.default),
+    websocket: forget(s.websocket),
     deleted:
       kind === "authorizer"
         ? { ...s.deleted, authorizers: [...s.deleted.authorizers, name] }

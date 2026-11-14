@@ -109,6 +109,10 @@ class Docker(
         }
     }
 
+    /** Whether [container] exists and runs; false when Docker cannot say. */
+    fun isRunning(container: String): Boolean =
+        (query(listOf("inspect", "--type", "container", "-f", "{{.State.Running}}", container)) as? Query.Ok)?.output?.trim() == "true"
+
     /** False when the volume is absent or Docker cannot be asked (not installed, daemon down). */
     fun volumeExists(name: String): Boolean = runCatching { run(listOf("volume", "inspect", name)) }.isSuccess
 
@@ -123,6 +127,8 @@ class Docker(
         val current = engine.refresh(app)
         if (current.services.isEmpty()) throw GantryException("no services; add some first")
         val authorizerEnvs = engine.authorizerEnvFiles(app)
+        ensureProxyImage(current)
+        stopDisplacedDatabases(current)
         // --remove-orphans stops services removed from the app; their ports are already back in the pool.
         compose(app, "up", "-d", "--wait", "--build", "--remove-orphans", stream = stream)
         // `up` recreated every authorizer whose env file changed, so pending ones get their routes back.
@@ -138,8 +144,42 @@ class Docker(
         app: String,
         service: String,
     ) {
-        engine.refresh(app)
+        val current = engine.refresh(app)
+        ensureProxyImage(current)
+        stopDisplacedDatabases(current)
         compose(app, "up", "-d", "--wait", engine.catalog.resolve(service).id)
+    }
+
+    /** Pulls the proxy's image while the old database still runs, so an offline machine never loses its database to the swap. */
+    private fun ensureProxyImage(app: App) {
+        val proxied = app.services.any { it.id in DATABASE_SERVICES && engine.serviceOptions(app, it.id)["query_log"] == "true" }
+        if (!proxied || imageExists(QUERY_LOG_IMAGE)) return
+        try {
+            run(listOf("pull", QUERY_LOG_IMAGE))
+        } catch (e: GantryException) {
+            throw GantryException(
+                "cannot pull $QUERY_LOG_IMAGE for the query-log proxy, so nothing was stopped: ${e.message?.trim()}. " +
+                    "Retry online, or set the database's query_log=false.",
+            )
+        }
+    }
+
+    /**
+     * Turning the query log on or off moves a database between `<service>` and `<service>-db`, and compose starts the
+     * new one before it replaces or removes the old: both would run on the same data volume. The old one is stopped
+     * first. Best effort: with no such container there is nothing to stop.
+     */
+    private fun stopDisplacedDatabases(app: App) {
+        app.services.filter { it.id in DATABASE_SERVICES }.forEach { state ->
+            val proxied = engine.serviceOptions(app, state.id)["query_log"] == "true"
+            val name = "${app.name}-${databaseServiceName(state.id, !proxied)}"
+            val image =
+                runCatching { run(listOf("inspect", "--type", "container", "-f", "{{.Config.Image}}", name)).trim() }.getOrNull()
+                    ?: return@forEach
+            // Only the database's own image: a proxy on any JRE tag must keep running.
+            if (!image.startsWith("${state.id}:")) return@forEach
+            runCatching { run(listOf("stop", name)) }
+        }
     }
 
     /**
@@ -311,8 +351,22 @@ class Docker(
     ): String {
         val args = mutableListOf("logs", "--no-color", "--tail", tail.toString())
         if (follow) args += "-f"
-        if (service != null) args += engine.catalog.resolve(service).id
+        if (service != null) args += logServices(app, service)
         return compose(app, *args.toTypedArray(), stream = stream)
+    }
+
+    /** A query-logged database's logs are its own and its proxy's, each line labelled; `<service>-db` names the database alone. */
+    private fun logServices(
+        app: String,
+        service: String,
+    ): List<String> {
+        val base = service.removeSuffix("-db")
+        if (base != service && base in DATABASE_SERVICES) return listOf(service)
+        val id = engine.catalog.resolve(service).id
+        if (id !in DATABASE_SERVICES) return listOf(id)
+        val loaded = engine.readApp(app)
+        val proxied = loaded.service(id) != null && engine.serviceOptions(loaded, id)["query_log"] == "true"
+        return if (proxied) listOf(databaseServiceName(id, true), id) else listOf(id)
     }
 
     fun status(appName: String): AppStatus {
@@ -362,14 +416,29 @@ class Docker(
         parseStates(runCatching { compose(app, "ps", "-a", "--format", "json") }.getOrDefault(""))
 
     private fun parseStates(output: String): Map<String, Pair<String, String>> =
-        output
-            .lineSequence()
-            .filter { it.isNotBlank() }
-            .mapNotNull { line ->
-                runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull()
-            }.mapNotNull { obj ->
-                obj.text("Service")?.let { it to ((obj.text("State") ?: "") to (obj.text("Health") ?: "")) }
-            }.toMap()
+        foldDatabases(
+            output
+                .lineSequence()
+                .filter { it.isNotBlank() }
+                .mapNotNull { line ->
+                    runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull()
+                }.mapNotNull { obj ->
+                    obj.text("Service")?.let { it to ((obj.text("State") ?: "") to (obj.text("Health") ?: "")) }
+                }.toMap(),
+        )
+
+    /** A database behind the query-log proxy reads as the worse of the proxy and its `<service>-db` container. */
+    private fun foldDatabases(states: Map<String, Pair<String, String>>): Map<String, Pair<String, String>> {
+        val out = states.toMutableMap()
+        DATABASE_SERVICES.forEach { id ->
+            val proxy = states[id] ?: return@forEach
+            val db = states[databaseServiceName(id, true)] ?: return@forEach
+            val state = if (db.first != "running") db.first else proxy.first
+            val health = listOf(db.second, proxy.second).minBy { HEALTH_RANK.indexOf(it).let { i -> if (i < 0) HEALTH_RANK.size else i } }
+            out[id] = state to health
+        }
+        return out
+    }
 
     private fun JsonObject.text(key: String) = this[key]?.jsonPrimitive?.contentOrNull
 
@@ -395,5 +464,8 @@ class Docker(
 
     private companion object {
         const val INIT_PROFILE = "init"
+
+        /** Worst first; anything else (no healthcheck) ranks after them. */
+        val HEALTH_RANK = listOf("unhealthy", "starting", "healthy")
     }
 }

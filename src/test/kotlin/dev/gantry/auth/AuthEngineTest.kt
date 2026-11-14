@@ -9,6 +9,7 @@ import com.nimbusds.jose.jwk.gen.RSAKeyGenerator
 import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.SignedJWT
 import dev.gantry.gateway.GatewayConfig
+import dev.gantry.gateway.WEBSOCKET_ROUTE
 import dev.gantry.gateway.parseGatewayConfig
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -169,6 +170,37 @@ ${if (create) createBlock else ""}
         assertEquals("true", result.headers["x-verified"])
         assertEquals("sub-1", result.context["sub"])
         assertEquals("u-9", result.context["uid"])
+    }
+
+    @Test
+    fun `a websocket handshake is authorized by the websocket block, reading the token from the query`() {
+        val yml =
+            """
+            authorizers:
+              fbws:
+                type: firebase
+                projectId: demo
+                tokenFrom: query:token
+            websocket:
+              auth: fbws
+              headers:
+                x-user-id: "{{uid}}"
+            """
+        val config = parseGatewayConfig("upstream: http://app:8080\n" + yml.trimIndent())
+        val result =
+            engine(config).decide(
+                request(
+                    WEBSOCKET_ROUTE,
+                    token = null,
+                    query =
+                        mapOf(
+                            "token" to token { claim("user_id", "u-7") },
+                        ),
+                ),
+            )
+
+        assertEquals(200, result.status)
+        assertEquals("u-7", result.headers["x-user-id"])
     }
 
     @Test
