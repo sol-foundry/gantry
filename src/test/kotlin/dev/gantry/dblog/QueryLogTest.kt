@@ -1,12 +1,16 @@
 package dev.gantry.dblog
 
+import dev.gantry.engine.ExecResult
+import dev.gantry.engine.GantryException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class QueryLogTest {
     private val file: Path = Files.createTempDirectory("gantry-querylog-test").resolve("db.jsonl")
@@ -86,5 +90,48 @@ class QueryLogTest {
     @Test
     fun `a missing file has no entries`() {
         assertEquals(emptyList(), QueryLog(file.resolveSibling("nope.jsonl")).recent())
+    }
+
+    @Test
+    fun `clearing goes through the proxy container`() {
+        write(entry("1", "2026-11-14T10:00:00Z", "select 1"))
+        val sent = mutableListOf<ByteArray>()
+
+        QueryLog(file) { content ->
+            sent += content
+            ExecResult.DONE
+        }.clear()
+
+        assertEquals(1, sent.size)
+        assertEquals(0, sent.single().size)
+        assertEquals(listOf("1"), QueryLog(file).recent().map { it.id })
+    }
+
+    @Test
+    fun `clearing empties the file here when the proxy is not running and fails when it cannot be reached`() {
+        write(entry("1", "2026-11-14T10:00:00Z", "select 1"))
+        QueryLog(file) { ExecResult.NOT_RUNNING }.clear()
+        assertEquals(0, Files.size(file))
+
+        write(entry("2", "2026-11-14T10:00:00Z", "select 2"))
+        assertFailsWith<GantryException> { QueryLog(file) { ExecResult.FAILED }.clear() }
+        assertEquals(listOf("2"), QueryLog(file).recent().map { it.id })
+    }
+
+    @Test
+    fun `clearing a log that was never written does nothing`() {
+        QueryLog(file).clear()
+        assertTrue(QueryLog(file).recent().isEmpty())
+    }
+
+    @Test
+    fun `time bounds read as an instant or as how long ago`() {
+        val now = Instant.parse("2026-11-14T10:00:00Z")
+        assertEquals(Instant.parse("2026-11-14T09:45:00Z"), parseQueryTime("15m", now))
+        assertEquals(Instant.parse("2026-11-14T08:00:00Z"), parseQueryTime("2h", now))
+        assertEquals(Instant.parse("2026-11-13T10:00:00Z"), parseQueryTime("1d", now))
+        assertEquals(Instant.parse("2026-11-14T09:59:30Z"), parseQueryTime("30s", now))
+        assertEquals(Instant.parse("2026-11-14T10:05:00Z"), parseQueryTime("2026-11-14T10:05:00Z", now))
+        assertFailsWith<GantryException> { parseQueryTime("yesterday", now) }
     }
 }

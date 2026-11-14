@@ -53,4 +53,24 @@ class QueryLogWriterTest {
         QueryLogWriter(file, 1_000_000).use { it.append(entry(2)) }
         assertEquals(listOf("id2", "id1"), QueryLog(file).recent().map { it.id })
     }
+
+    @Test
+    fun `writing continues correctly after the file is emptied`() {
+        val probe = QueryLogWriter(file, Long.MAX_VALUE)
+        probe.append(entry(0))
+        val entryBytes = Files.size(file)
+        probe.close()
+        Files.delete(file)
+
+        val writer = QueryLogWriter(file, entryBytes * 10 + entryBytes / 2)
+        (1..9).forEach { writer.append(entry(it)) }
+        java.nio.channels.FileChannel
+            .open(file, java.nio.file.StandardOpenOption.WRITE)
+            .use { it.truncate(0) }
+        (11..19).forEach { writer.append(entry(it)) }
+        writer.close()
+
+        assertTrue(Files.readAllBytes(file).none { it == 0.toByte() })
+        assertEquals((19 downTo 11).map { "id$it" }, QueryLog(file).recent(limit = 1000).map { it.id })
+    }
 }

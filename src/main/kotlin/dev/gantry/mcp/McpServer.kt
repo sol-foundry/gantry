@@ -1,5 +1,9 @@
 package dev.gantry.mcp
 
+import dev.gantry.dblog.QueryEntry
+import dev.gantry.dblog.parseQueryTime
+import dev.gantry.dblog.queryLog
+import dev.gantry.dblog.queryLoggedDatabases
 import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
 import dev.gantry.gateway.Call
@@ -30,6 +34,9 @@ private const val CALLS_TOOL = "get_gateway_calls"
 private const val CALLS_DEFAULT = 20
 private const val CALLS_MAX = 100
 private const val BODY_BYTES = 4096
+private const val QUERIES_TOOL = "get_db_queries"
+private const val QUERY_ROWS = 20
+private const val QUERY_VALUE_CHARS = 200
 
 private const val PARSE_ERROR = -32700
 private const val INVALID_REQUEST = -32600
@@ -84,6 +91,8 @@ class McpServer(
                     when {
                         name == TOOL -> result(id, callTool())
                         name == CALLS_TOOL && hasGateway() -> result(id, callGatewayCalls(params["arguments"] as? JsonObject))
+                        name == QUERIES_TOOL && loggedDatabases().isNotEmpty() ->
+                            result(id, callDbQueries(params["arguments"] as? JsonObject))
                         else -> error(id, INVALID_PARAMS, "Unknown tool: $name")
                     }
                 }
@@ -124,7 +133,94 @@ class McpServer(
             false
         }
 
-    private fun tools() = listOfNotNull(toolDefinition(), if (hasGateway()) gatewayCallsDefinition() else null)
+    private fun loggedDatabases(): List<String> =
+        try {
+            engine.queryLoggedDatabases(app)
+        } catch (_: GantryException) {
+            emptyList()
+        } catch (_: SerializationException) {
+            emptyList()
+        }
+
+    private fun tools() =
+        listOfNotNull(
+            toolDefinition(),
+            if (hasGateway()) gatewayCallsDefinition() else null,
+            loggedDatabases().takeIf { it.isNotEmpty() }?.let(::dbQueriesDefinition),
+        )
+
+    private fun dbQueriesDefinition(databases: List<String>) =
+        buildJsonObject {
+            put("name", QUERIES_TOOL)
+            put(
+                "description",
+                "The newest statements Gantry app '$app' ran against its databases (${databases.joinToString()}), newest first, " +
+                    "with SQL, parameters, duration, outcome or error and result rows, cut to $QUERY_ROWS rows and " +
+                    "$QUERY_VALUE_CHARS characters per value (truncated is then true). Filter with search (text in the SQL or " +
+                    "client, ignoring case) and since (how long ago, like 15m, 2h or 1d, or an ISO time).",
+            )
+            putJsonObject("inputSchema") {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("service") {
+                        put("type", "string")
+                        put("description", "The database service; optional when the app has one query-logged database.")
+                    }
+                    putJsonObject("search") {
+                        put("type", "string")
+                        put("description", "Only statements whose SQL or client contains this text, ignoring case.")
+                    }
+                    putJsonObject("since") {
+                        put("type", "string")
+                        put("description", "Only statements from then on: how long ago (15m, 2h, 1d) or an ISO time.")
+                    }
+                    putJsonObject("limit") {
+                        put("type", "integer")
+                        put("description", "How many statements to return (default $CALLS_DEFAULT, at most $CALLS_MAX).")
+                    }
+                }
+            }
+            putJsonObject("annotations") { put("readOnlyHint", true) }
+        }
+
+    private fun callDbQueries(arguments: JsonObject?): JsonObject =
+        try {
+            val databases = loggedDatabases()
+            val service = arguments?.text("service")?.ifBlank { null }
+            val name =
+                when {
+                    service != null && service in databases -> service
+                    service != null -> throw GantryException(
+                        "'$service' is not a query-logged database of '$app' (have: ${databases.joinToString()})",
+                    )
+                    databases.size == 1 -> databases.single()
+                    else -> throw GantryException("name a service: ${databases.joinToString()}")
+                }
+            val limit = ((arguments?.get("limit") as? JsonPrimitive)?.intOrNull ?: CALLS_DEFAULT).coerceIn(1, CALLS_MAX)
+            val since = arguments?.text("since")?.ifBlank { null }?.let { parseQueryTime(it) }
+            val entries = engine.queryLog(app, name).recent(limit, arguments?.text("search")?.ifBlank { null }, since).map { it.cutRows() }
+            buildJsonObject { put("content", buildJsonArray { add(textContent(Json.encodeToString(entries))) }) }
+        } catch (e: GantryException) {
+            toolError(e.message ?: "error")
+        }
+
+    /** Rows and values are cut again for agents, so a few large results do not flood their context. */
+    private fun QueryEntry.cutRows(): QueryEntry {
+        val kept = rows?.take(QUERY_ROWS)
+        var cut = rows != null && rows.size > QUERY_ROWS
+        val cells =
+            kept?.map { row ->
+                row.map { value ->
+                    if (value != null && value.length > QUERY_VALUE_CHARS) {
+                        cut = true
+                        value.take(QUERY_VALUE_CHARS)
+                    } else {
+                        value
+                    }
+                }
+            }
+        return copy(rows = cells, truncated = truncated || cut)
+    }
 
     private fun gatewayCallsDefinition() =
         buildJsonObject {

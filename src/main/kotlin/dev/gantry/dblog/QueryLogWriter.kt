@@ -15,25 +15,25 @@ private val json = Json { encodeDefaults = true }
 /**
  * Appends [QueryEntry]s as JSON lines to [file]. It is the only writer of the file: past [maxSizeBytes] it rewrites the
  * file in place (truncate and write through the same channel, so the inode survives) keeping the newest lines that
- * total at most half the cap, so trimming happens once per half-cap of new writes rather than on every append.
+ * total at most half the cap, so trimming happens once per half-cap of new writes rather than on every append. The
+ * size is always the channel's: Gantry empties the file from inside the container, and an append channel then writes at
+ * the new end.
  */
 class QueryLogWriter(
     private val file: Path,
     private val maxSizeBytes: Long,
 ) : Closeable {
     private val channel: FileChannel
-    private var size: Long
 
     init {
         Files.createDirectories(file.parent)
         channel = FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND)
-        size = channel.size()
     }
 
     @Synchronized
     fun append(entry: QueryEntry) {
         write(json.encodeToString(entry).toByteArray(Charsets.UTF_8) + NEWLINE)
-        if (size > maxSizeBytes) trim()
+        if (channel.size() > maxSizeBytes) trim()
     }
 
     @Synchronized
@@ -42,7 +42,6 @@ class QueryLogWriter(
     private fun write(bytes: ByteArray) {
         val buffer = ByteBuffer.wrap(bytes)
         while (buffer.hasRemaining()) channel.write(buffer)
-        size += bytes.size
     }
 
     private fun trim() {
@@ -58,7 +57,6 @@ class QueryLogWriter(
             fits
         }
         channel.truncate(0)
-        size = 0
         newest.asReversed().forEach { write(it + NEWLINE) }
     }
 

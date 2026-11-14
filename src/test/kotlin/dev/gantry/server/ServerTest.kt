@@ -1,6 +1,8 @@
 package dev.gantry.server
 
 import com.sun.net.httpserver.HttpServer
+import dev.gantry.dblog.QueryEntry
+import dev.gantry.dblog.QueryLogWriter
 import dev.gantry.engine.Engine
 import dev.gantry.engine.NO_DOCKER
 import dev.gantry.gateway.AuthorizerContainers
@@ -32,6 +34,7 @@ import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class ServerTest {
     private val gantry =
@@ -145,6 +148,68 @@ class ServerTest {
     private fun gatewayCall(id: String) =
         """{"request":{"uri":"/a?q=1","method":"GET","headers":{"authorization":"Bearer secret","x-request-id":"$id"}},""" +
             """"start_time":1793814923986,"latency":2.0,"response":{"status":404,"headers":{}},"route_id":"default"}"""
+
+    private fun queryEntry(
+        id: String,
+        time: String,
+        sql: String,
+    ) = QueryEntry(
+        id = id,
+        time = time,
+        durationMs = 1.5,
+        service = "postgres",
+        connectionId = 1,
+        client = null,
+        sql = sql,
+        params = emptyList(),
+        columns = null,
+        rows = null,
+        rowCount = null,
+        affected = null,
+        command = null,
+        error = null,
+        truncated = false,
+    )
+
+    @Test
+    fun `the queries endpoint filters by search and time`() =
+        dashboard {
+            gantry.create("shop", services = listOf("postgres"))
+            val file = gantry.appDir("shop").resolve("db-log").resolve("postgres.jsonl")
+            QueryLogWriter(file, 1_000_000).use { w ->
+                w.append(queryEntry("a", "2026-11-14T10:00:00Z", "select * from users"))
+                w.append(queryEntry("b", "2026-11-14T10:01:00Z", "update orders set x = 1"))
+                w.append(queryEntry("c", "2026-11-14T10:02:00Z", "select * from users where id = 1"))
+            }
+            val base = "/api/apps/shop/db/postgres/queries"
+
+            val all = client.get(base).bodyAsText()
+            assertTrue(all.indexOf("\"id\":\"c\"") < all.indexOf("\"id\":\"a\""))
+            val users = client.get("$base?search=USERS&limit=1").bodyAsText()
+            assertContains(users, "\"id\":\"c\"")
+            assertFalse("\"id\":\"a\"" in users)
+            val window = client.get("$base?from=2026-11-14T10:01:00Z&to=2026-11-14T10:01:30Z").bodyAsText()
+            assertContains(window, "\"id\":\"b\"")
+            assertFalse("\"id\":\"c\"" in window)
+            assertEquals(HttpStatusCode.BadRequest, client.get("$base?from=soon").status)
+
+            assertContains(client.get("$base/a").bodyAsText(), "\"id\":\"a\"")
+            assertEquals(HttpStatusCode.NotFound, client.get("$base/nope").status)
+
+            assertEquals(HttpStatusCode.OK, client.delete(base).status)
+            assertEquals("[]", client.get(base).bodyAsText())
+        }
+
+    @Test
+    fun `the queries endpoint is 404 unless the service is a query-logged database`() =
+        dashboard {
+            gantry.create("shop", services = listOf("valkey"))
+            gantry.add("shop", "postgres", mapOf("query_log" to "false"))
+            listOf("postgres", "valkey", "missing").forEach {
+                assertEquals(HttpStatusCode.NotFound, client.get("/api/apps/shop/db/$it/queries").status, it)
+            }
+            assertEquals(HttpStatusCode.NotFound, client.delete("/api/apps/shop/db/postgres/queries").status)
+        }
 
     @Test
     fun `gateway routes are 404 for an app without a gateway`() =
