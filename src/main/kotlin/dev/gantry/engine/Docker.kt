@@ -334,8 +334,22 @@ class Docker(
     ): String {
         val args = mutableListOf("logs", "--no-color", "--tail", tail.toString())
         if (follow) args += "-f"
-        if (service != null) args += engine.catalog.resolve(service).id
+        if (service != null) args += logServices(app, service)
         return compose(app, *args.toTypedArray(), stream = stream)
+    }
+
+    /** A query-logged database's logs are its own and its proxy's, each line labelled; `<service>-db` names the database alone. */
+    private fun logServices(
+        app: String,
+        service: String,
+    ): List<String> {
+        val base = service.removeSuffix("-db")
+        if (base != service && base in DATABASE_SERVICES) return listOf(service)
+        val id = engine.catalog.resolve(service).id
+        if (id !in DATABASE_SERVICES) return listOf(id)
+        val loaded = engine.readApp(app)
+        val proxied = loaded.service(id) != null && engine.serviceOptions(loaded, id)["query_log"] == "true"
+        return if (proxied) listOf(databaseServiceName(id, true), id) else listOf(id)
     }
 
     fun status(appName: String): AppStatus {
@@ -385,14 +399,29 @@ class Docker(
         parseStates(runCatching { compose(app, "ps", "-a", "--format", "json") }.getOrDefault(""))
 
     private fun parseStates(output: String): Map<String, Pair<String, String>> =
-        output
-            .lineSequence()
-            .filter { it.isNotBlank() }
-            .mapNotNull { line ->
-                runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull()
-            }.mapNotNull { obj ->
-                obj.text("Service")?.let { it to ((obj.text("State") ?: "") to (obj.text("Health") ?: "")) }
-            }.toMap()
+        foldDatabases(
+            output
+                .lineSequence()
+                .filter { it.isNotBlank() }
+                .mapNotNull { line ->
+                    runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull()
+                }.mapNotNull { obj ->
+                    obj.text("Service")?.let { it to ((obj.text("State") ?: "") to (obj.text("Health") ?: "")) }
+                }.toMap(),
+        )
+
+    /** A database behind the query-log proxy reads as the worse of the proxy and its `<service>-db` container. */
+    private fun foldDatabases(states: Map<String, Pair<String, String>>): Map<String, Pair<String, String>> {
+        val out = states.toMutableMap()
+        DATABASE_SERVICES.forEach { id ->
+            val proxy = states[id] ?: return@forEach
+            val db = states[databaseServiceName(id, true)] ?: return@forEach
+            val state = if (db.first != "running") db.first else proxy.first
+            val health = listOf(db.second, proxy.second).minBy { HEALTH_RANK.indexOf(it).let { i -> if (i < 0) HEALTH_RANK.size else i } }
+            out[id] = state to health
+        }
+        return out
+    }
 
     private fun JsonObject.text(key: String) = this[key]?.jsonPrimitive?.contentOrNull
 
@@ -418,5 +447,8 @@ class Docker(
 
     private companion object {
         const val INIT_PROFILE = "init"
+
+        /** Worst first; anything else (no healthcheck) ranks after them. */
+        val HEALTH_RANK = listOf("unhealthy", "starting", "healthy")
     }
 }
