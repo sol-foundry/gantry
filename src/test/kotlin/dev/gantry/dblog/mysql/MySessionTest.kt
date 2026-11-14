@@ -543,6 +543,15 @@ class MySessionTest {
     }
 
     @Test
+    fun `a gantry connection's statements are not logged`() {
+        val s = session(attrs = listOf("_client_name" to "mysql-connector-j", "program_name" to "gantry"))
+        s.client(My.query("select 1"))
+        s.server(My.ok())
+        assertEquals("gantry", s.client)
+        assertTrue(entries.isEmpty())
+    }
+
+    @Test
     fun `a command sent before the server finishes authentication is still logged`() {
         val s = MySession("mysql", 1, Limits(1000, 1000)) { entries += it }
         s.server(My.greeting(My.BASE))

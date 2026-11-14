@@ -1,5 +1,6 @@
 package dev.gantry.db
 
+import dev.gantry.dblog.GANTRY_CLIENT
 import dev.gantry.engine.Docker
 import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
@@ -806,9 +807,11 @@ private fun sourceUrl(
     val host = if (':' in source.host && !source.host.startsWith("[")) "[${source.host}]" else source.host
     val database = URLEncoder.encode(source.database, Charsets.UTF_8).replace("+", "%20")
     return when (dialect) {
-        Dialect.Postgres -> "jdbc:postgresql://$host:${source.port}/$database?connectTimeout=5&socketTimeout=30"
+        Dialect.Postgres ->
+            "jdbc:postgresql://$host:${source.port}/$database?connectTimeout=5&socketTimeout=30&ApplicationName=$GANTRY_CLIENT"
         Dialect.MySql ->
-            "jdbc:mysql://$host:${source.port}/$database?connectTimeout=5000&socketTimeout=30000&allowPublicKeyRetrieval=true&$MYSQL_SAFE"
+            "jdbc:mysql://$host:${source.port}/$database?connectTimeout=5000&socketTimeout=30000&allowPublicKeyRetrieval=true&" +
+                "$MYSQL_SAFE&$MYSQL_CLIENT"
     }
 }
 

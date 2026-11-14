@@ -7,11 +7,17 @@ import kotlin.test.assertFailsWith
 
 class DialectTest {
     @Test
+    fun `gantry's own connections name themselves gantry, so the query log skips them`() {
+        kotlin.test.assertTrue(Dialect.Postgres.jdbcUrl(5432, "shop").endsWith("?ApplicationName=gantry"))
+        kotlin.test.assertTrue("connectionAttributes=program_name:gantry" in Dialect.MySql.jdbcUrl(3306, "shop"))
+    }
+
+    @Test
     fun `local database names are encoded in the url`() {
         val postgres = Dialect.Postgres.jdbcUrl(5432, "shop?socketFactory=x")
         val mysql = Dialect.MySql.jdbcUrl(3306, "shop?allowLoadLocalInfile=true")
 
-        assertEquals("jdbc:postgresql://127.0.0.1:5432/shop%3FsocketFactory%3Dx", postgres)
+        assertEquals("jdbc:postgresql://127.0.0.1:5432/shop%3FsocketFactory%3Dx?ApplicationName=gantry", postgres)
         kotlin.test.assertTrue(mysql.startsWith("jdbc:mysql://127.0.0.1:3306/shop%3FallowLoadLocalInfile%3Dtrue?"))
         listOf("allowLoadLocalInfile=false", "allowUrlInLocalInfile=false", "autoDeserialize=false").forEach {
             kotlin.test.assertTrue(it in mysql, "local mysql url pins $it")

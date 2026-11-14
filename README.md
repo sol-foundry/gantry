@@ -246,9 +246,11 @@ database's `main` port, so `gantry env` and your connection settings stay exactl
 
 Everything is recorded as is, nothing redacted: background traffic (schedulers, pool checks, migrations your app
 runs) and the queries agents run with `psql` or `mysql` show up beside your app's own, told apart by the client
-name (Postgres `application_name`, MySQL's `program_name` attribute). Gantry's own access (the SQL console, the
-database browser, `gantry sync`, `gantry migrate`) goes to the database directly on its `direct` port, published on
-`127.0.0.1`, and is not recorded. Point your own tools there too when you don't want them in the log.
+name (Postgres `application_name`, MySQL's `program_name` attribute). Gantry's own queries (the SQL console, the
+database browser, `gantry sync`, `gantry migrate`) are never logged: they go to the database directly on its `direct`
+port, published on `127.0.0.1`, and every connection Gantry opens names itself `gantry`, which the proxy never
+records, so they stay out even when they do pass through it. Point your own tools at `direct` too when you don't want
+them in the log.
 
 **TLS.** Apps that require TLS, as they do against RDS, connect unchanged: the proxy accepts Postgres
 `sslmode=require` and MySQL `sslMode=REQUIRED` with a certificate Gantry generates per app, and plaintext

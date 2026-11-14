@@ -288,12 +288,13 @@ class QueryLogEndToEndTest {
 
     @Test
     @Order(5)
-    fun `gantry's own tools use direct and are not logged`() {
+    fun `gantry's own tools use direct and are not logged, even through main`() {
         val explorer = DatabaseExplorer(engine)
         listOf("postgres", "mysql").forEach { service ->
             assertEquals(ports.getValue("$service/direct"), DatabaseTarget.resolve(engine, app, service).jdbcUrl.portOf())
             val marker = "explorer_marker_$service"
             explorer.execute(app, service, "SELECT 1 AS $marker")
+            appTraffic(service, "SELECT 1 AS main_$marker", client = GANTRY_CLIENT)
             appTraffic(service, "SELECT 2 AS after_$marker")
             awaitEntry(service) { it.sql == "SELECT 2 AS after_$marker" }
             assertTrue(engine.queryLog(app, service).recent(1000, marker).none { it.sql.contains("SELECT 1 AS") }, service)
@@ -341,7 +342,8 @@ class QueryLogEndToEndTest {
     private fun appTraffic(
         service: String,
         sql: String,
-    ) = (if (service == "postgres") pg("disable", "e2e-app") else my("DISABLED", "e2e-app")).use { it.single(sql) }
+        client: String = "e2e-app",
+    ) = (if (service == "postgres") pg("disable", client) else my("DISABLED", client)).use { it.single(sql) }
 
     private fun log(service: String) = engine.appDir(app).resolve("db-log").resolve("$service.jsonl")
 

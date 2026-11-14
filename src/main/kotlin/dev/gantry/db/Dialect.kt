@@ -1,5 +1,6 @@
 package dev.gantry.db
 
+import dev.gantry.dblog.GANTRY_CLIENT
 import dev.gantry.engine.GantryException
 import java.sql.PreparedStatement
 import java.sql.Types
@@ -92,7 +93,7 @@ sealed class Dialect {
         override fun jdbcUrl(
             port: Int,
             database: String,
-        ) = "jdbc:postgresql://127.0.0.1:$port/${urlPart(database)}"
+        ) = "jdbc:postgresql://127.0.0.1:$port/${urlPart(database)}?ApplicationName=$GANTRY_CLIENT"
 
         override fun quote(identifier: String) = "\"" + identifier.replace("\"", "\"\"") + "\""
 
@@ -249,7 +250,7 @@ sealed class Dialect {
         override fun jdbcUrl(
             port: Int,
             database: String,
-        ) = "jdbc:mysql://127.0.0.1:$port/${urlPart(database)}?allowPublicKeyRetrieval=true&useSSL=false&$MYSQL_SAFE"
+        ) = "jdbc:mysql://127.0.0.1:$port/${urlPart(database)}?allowPublicKeyRetrieval=true&useSSL=false&$MYSQL_SAFE&$MYSQL_CLIENT"
 
         override fun quote(identifier: String) = "`" + identifier.replace("`", "``") + "`"
 
@@ -375,6 +376,8 @@ internal fun sqlFragment(
  * MySQL driver features a connection never needs and that turn a crafted URL or a malicious server into file reads or
  * code execution: reading client files for `LOAD DATA LOCAL`, from URLs too, and deserializing Java objects.
  */
+internal const val MYSQL_CLIENT = "connectionAttributes=program_name:$GANTRY_CLIENT"
+
 internal const val MYSQL_SAFE = "allowLoadLocalInfile=false&allowUrlInLocalInfile=false&autoDeserialize=false"
 
 /** [value] encoded for a JDBC URL's path, so a database name can't add `?options`. */

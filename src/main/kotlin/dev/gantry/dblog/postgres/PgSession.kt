@@ -1,5 +1,6 @@
 package dev.gantry.dblog.postgres
 
+import dev.gantry.dblog.GANTRY_CLIENT
 import dev.gantry.dblog.QueryEntry
 import dev.gantry.dblog.QueryError
 import dev.gantry.dblog.capped
@@ -509,6 +510,7 @@ class PgSession(
     private fun emitRun(run: Run) {
         val done = run.completion ?: return
         run.completion = null
+        if (client == GANTRY_CLIENT) return
         val start = run.start ?: done.end
         val parts = done.tag?.split(' ').orEmpty()
         val verb = parts.takeWhile { it.toLongOrNull() == null }.joinToString(" ").ifEmpty { null }

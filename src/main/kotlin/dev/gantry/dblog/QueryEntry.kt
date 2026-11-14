@@ -6,6 +6,9 @@ import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets.UTF_8
 
+/** The client name Gantry's own database connections give themselves; the proxy never logs their statements. */
+const val GANTRY_CLIENT = "gantry"
+
 /** One statement a database proxy saw: what was asked, how long it took and what came back (rows cut at the configured size). */
 @Serializable
 data class QueryEntry(

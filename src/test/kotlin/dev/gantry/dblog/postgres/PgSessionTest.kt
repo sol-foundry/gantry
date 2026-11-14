@@ -475,6 +475,23 @@ class PgSessionTest {
     }
 
     @Test
+    fun `a gantry connection's statements are not logged`() {
+        val s = session()
+        s.fromClient(Pg.startup("user" to "app", "application_name" to "gantry"))
+        s.client(Pg.query("select 1"), Pg.parse("", "select $1", INT4), Pg.bind("", "", "1"), Pg.execute(""), Pg.sync())
+        s.server(
+            Pg.commandComplete("SELECT 0"),
+            Pg.ready(),
+            Pg.parseComplete(),
+            Pg.bindComplete(),
+            Pg.commandComplete("SELECT 0"),
+            Pg.ready(),
+        )
+        s.close()
+        assertTrue(entries.isEmpty())
+    }
+
+    @Test
     fun `a bind cut at the frame cap keeps the parameters that fit`() {
         val s = session()
         val full = Pg.bind("", "S_1", "small", "x".repeat(100)).payload

@@ -1,5 +1,6 @@
 package dev.gantry.dblog.mysql
 
+import dev.gantry.dblog.GANTRY_CLIENT
 import dev.gantry.dblog.QueryEntry
 import dev.gantry.dblog.QueryError
 import dev.gantry.dblog.capped
@@ -683,6 +684,7 @@ class MySession(
         error: QueryError?,
         now: Instant,
     ) {
+        if (client == GANTRY_CLIENT) return
         val command = keyword(run.sql)
         val entry =
             QueryEntry(

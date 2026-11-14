@@ -161,6 +161,15 @@ class SyncTest {
             .check("shop", "mysql", SourceSettings("stage-db.internal", 3306, "shop", "me"), "pw")
 
         listOf("allowLoadLocalInfile=false", "allowUrlInLocalInfile=false", "autoDeserialize=false").forEach { assertContains(url, it) }
+        assertContains(url, "connectionAttributes=program_name:gantry")
+    }
+
+    @Test
+    fun `postgres source checks name the connection gantry`() {
+        engine.create("shop", services = listOf("postgres"))
+        var url = ""
+        Sync(engine, connect = { u, _, _ -> fakeConnection(17, 0).also { url = u } }).check("shop", "postgres", stage, "pw")
+        assertContains(url, "ApplicationName=gantry")
     }
 
     @Test
