@@ -3,6 +3,9 @@ package dev.gantry.engine
 /** The stock JRE image the query-log proxy runs gantry's jars in. */
 const val QUERY_LOG_IMAGE = "eclipse-temurin:17-jre"
 
+/** The proxy's in-container healthcheck port: probing the database port itself would make the MySQL proxy dial MySQL. */
+private const val HEALTH_PORT = 8086
+
 /** The database's own host port, for gantry's tools; `main` is the proxy's while the query log is on. */
 const val DIRECT_PORT = "direct"
 
@@ -70,6 +73,8 @@ internal fun queryLogProxy(context: Context): List<String> {
             "\"${limit("query_log_max_size")}\"",
             "--service",
             service,
+            "--health-port",
+            "\"$HEALTH_PORT\"",
         )
     return listOf(
         "  $service:",
@@ -88,7 +93,7 @@ internal fun queryLogProxy(context: Context): List<String> {
             "      $db:",
             "        condition: service_healthy",
             "    healthcheck:",
-            "      test: [\"CMD\", \"bash\", \"-c\", \":> /dev/tcp/127.0.0.1/$port\"]",
+            "      test: [\"CMD\", \"bash\", \"-c\", \":> /dev/tcp/127.0.0.1/$HEALTH_PORT\"]",
             "      interval: 2s",
             "      timeout: 3s",
             "      retries: 30",

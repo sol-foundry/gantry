@@ -45,27 +45,34 @@ object Certificates {
         val store = tls.resolve("$app.p12")
         val passwordFile = tls.resolve("$app.password")
         if (Files.exists(store) && Files.exists(passwordFile)) {
+            listOf(store, passwordFile).forEach(::restrict)
             return TlsFiles(store, Files.readString(passwordFile).trim())
         }
         val password = ByteArray(24).also(random::nextBytes).let { Base64.getUrlEncoder().withoutPadding().encodeToString(it) }
-        val tmpStore = tls.resolve("$app.p12.tmp")
+        val tmpStore = createOwnerOnly(tls.resolve("$app.p12.tmp"))
         Files.newOutputStream(tmpStore).use { generate(password).store(it, password.toCharArray()) }
-        writeOwnerOnly(tls.resolve("$app.password.tmp"), password).let {
+        Files.writeString(createOwnerOnly(tls.resolve("$app.password.tmp")), password).let {
             Files.move(it, passwordFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         }
         Files.move(tmpStore, store, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         return TlsFiles(store, password)
     }
 
-    private fun writeOwnerOnly(
-        file: Path,
-        text: String,
-    ): Path {
+    private val ownerOnly = PosixFilePermissions.fromString("rw-------")
+
+    /** An empty [file] only its owner can read (the proxy reads it as root). */
+    private fun createOwnerOnly(file: Path): Path {
         Files.deleteIfExists(file)
         if (Files.getFileStore(file.parent).supportsFileAttributeView("posix")) {
-            Files.createFile(file, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+            return Files.createFile(file, PosixFilePermissions.asFileAttribute(ownerOnly))
         }
-        return Files.writeString(file, text)
+        return Files.createFile(file)
+    }
+
+    private fun restrict(file: Path) {
+        if (Files.getFileStore(file).supportsFileAttributeView("posix") && Files.getPosixFilePermissions(file) != ownerOnly) {
+            runCatching { Files.setPosixFilePermissions(file, ownerOnly) }
+        }
     }
 
     private fun generate(password: String): KeyStore {

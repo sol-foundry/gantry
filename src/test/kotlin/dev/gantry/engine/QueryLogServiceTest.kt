@@ -88,6 +88,9 @@ class QueryLogServiceTest {
             assertEquals("1048576", arg("--max-bytes"))
             assertEquals("209715200", arg("--max-size"))
             assertEquals(id, arg("--service"))
+            val health = arg("--health-port")
+            assertNotEquals("$port", health)
+            assertContains(((proxy["healthcheck"] as Map<*, *>)["test"] as List<*>).joinToString(" "), "/dev/tcp/127.0.0.1/$health")
 
             val volumes = proxy.list("volumes")
             assertTrue(volumes.any { it.endsWith(":/gantry:ro") && it.startsWith(home.resolve("runtime").toString()) }, volumes.toString())
@@ -281,5 +284,39 @@ class QueryLogServiceTest {
         calls = log.readText().lines()
         assertTrue("stop shop-postgres-db" in calls, calls.toString())
         assertTrue(calls.indexOf("stop shop-postgres-db") < calls.indexOfFirst { "compose" in it && " up " in it }, calls.toString())
+    }
+
+    @Test
+    fun `the proxy image is pulled before the old database is stopped, and a failed pull stops nothing`() {
+        val tools = Files.createTempDirectory("gantry-fake-docker")
+        val log = tools.resolve("docker.log")
+        val pull = tools.resolve("pull")
+        val docker = tools.resolve("docker")
+        docker.writeText(
+            "#!/bin/sh\necho \"\$@\" >> '$log'\n" +
+                "[ \"\$1 \$2\" = 'image inspect' ] && exit 1\n" +
+                "[ \"\$1\" = pull ] && exit \$(cat '$pull')\n" +
+                "[ \"\$1\" = inspect ] && echo postgres:16-alpine && exit 0\nexit 0\n",
+        )
+        Files.setPosixFilePermissions(
+            docker,
+            java.nio.file.attribute.PosixFilePermissions
+                .fromString("rwx------"),
+        )
+        val live = Engine(home = tools.resolve("home"), dockerCommand = docker.toString(), runtimeLib = TEST_RUNTIME_LIB)
+        live.create("shop", services = listOf("postgres"))
+
+        pull.writeText("1")
+        val failed = runCatching { live.docker.up("shop") }.exceptionOrNull()
+        assertTrue(failed is GantryException, failed.toString())
+        assertContains(failed.message.orEmpty(), QUERY_LOG_IMAGE)
+        assertFalse(log.readText().lines().any { it.startsWith("stop ") || " up " in it }, log.readText())
+
+        log.writeText("")
+        pull.writeText("0")
+        live.docker.up("shop")
+        val calls = log.readText().lines()
+        val pulled = calls.indexOf("pull $QUERY_LOG_IMAGE")
+        assertTrue(pulled >= 0 && pulled < calls.indexOf("stop shop-postgres"), calls.toString())
     }
 }

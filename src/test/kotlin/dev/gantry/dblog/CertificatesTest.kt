@@ -35,9 +35,10 @@ class CertificatesTest {
         assertTrue(cert.notAfter.time - cert.notBefore.time >= 3650L * 24 * 3600 * 1000)
         assertTrue(store.getKey(store.aliases().toList().single(), first.password.toCharArray()) != null)
 
-        val password = dir.resolve("tls/shop.password")
-        if (Files.getFileStore(password).supportsFileAttributeView("posix")) {
-            assertEquals(setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE), Files.getPosixFilePermissions(password))
+        listOf(dir.resolve("tls/shop.password"), first.keyStore).forEach { file ->
+            if (Files.getFileStore(file).supportsFileAttributeView("posix")) {
+                assertEquals(setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE), Files.getPosixFilePermissions(file))
+            }
         }
     }
 
@@ -48,5 +49,19 @@ class CertificatesTest {
         val b = Certificates.ensure(dir, "b")
         assertTrue(a.password != b.password)
         assertTrue(!a.keyStore.readBytes().contentEquals(b.keyStore.readBytes()))
+    }
+
+    @Test
+    fun `a key store an older gantry left readable becomes owner-only`() {
+        val dir = createTempDirectory("gantry-tls")
+        val first = Certificates.ensure(dir, "shop")
+        if (!Files.getFileStore(first.keyStore).supportsFileAttributeView("posix")) return
+        Files.setPosixFilePermissions(
+            first.keyStore,
+            java.nio.file.attribute.PosixFilePermissions
+                .fromString("rw-r--r--"),
+        )
+        Certificates.ensure(dir, "shop")
+        assertEquals(setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE), Files.getPosixFilePermissions(first.keyStore))
     }
 }

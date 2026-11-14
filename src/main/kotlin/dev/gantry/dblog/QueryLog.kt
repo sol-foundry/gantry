@@ -42,7 +42,8 @@ class QueryLog(
                         arrayOf<OpenOption>(StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING, LinkOption.NOFOLLOW_LINKS)
                     FileChannel.open(file, *options).close()
                 } catch (e: IOException) {
-                    throw GantryException("could not clear $file: ${e.message}")
+                    // On Linux the proxy, running as root, owns the file; only it can empty it.
+                    throw GantryException("could not clear $file: ${e.message}; start the app (gantry up) and clear again")
                 }
         }
     }

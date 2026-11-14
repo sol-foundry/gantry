@@ -127,6 +127,7 @@ class Docker(
         val current = engine.refresh(app)
         if (current.services.isEmpty()) throw GantryException("no services; add some first")
         val authorizerEnvs = engine.authorizerEnvFiles(app)
+        ensureProxyImage(current)
         stopDisplacedDatabases(current)
         // --remove-orphans stops services removed from the app; their ports are already back in the pool.
         compose(app, "up", "-d", "--wait", "--build", "--remove-orphans", stream = stream)
@@ -143,8 +144,24 @@ class Docker(
         app: String,
         service: String,
     ) {
-        stopDisplacedDatabases(engine.refresh(app))
+        val current = engine.refresh(app)
+        ensureProxyImage(current)
+        stopDisplacedDatabases(current)
         compose(app, "up", "-d", "--wait", engine.catalog.resolve(service).id)
+    }
+
+    /** Pulls the proxy's image while the old database still runs, so an offline machine never loses its database to the swap. */
+    private fun ensureProxyImage(app: App) {
+        val proxied = app.services.any { it.id in DATABASE_SERVICES && engine.serviceOptions(app, it.id)["query_log"] == "true" }
+        if (!proxied || imageExists(QUERY_LOG_IMAGE)) return
+        try {
+            run(listOf("pull", QUERY_LOG_IMAGE))
+        } catch (e: GantryException) {
+            throw GantryException(
+                "cannot pull $QUERY_LOG_IMAGE for the query-log proxy, so nothing was stopped: ${e.message?.trim()}. " +
+                    "Retry online, or set the database's query_log=false.",
+            )
+        }
     }
 
     /**

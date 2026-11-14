@@ -3,8 +3,13 @@ package dev.gantry.dblog
 import dev.gantry.dblog.mysql.MyProxy
 import dev.gantry.dblog.postgres.Limits
 import dev.gantry.dblog.postgres.PgProxy
+import java.io.IOException
+import java.net.InetAddress
+import java.net.ServerSocket
 import java.nio.file.Files
+import java.nio.file.InvalidPathException
 import java.nio.file.Path
+import kotlin.concurrent.thread
 import kotlin.system.exitProcess
 
 private const val DEFAULT_MAX_ROWS = 1000
@@ -22,6 +27,7 @@ private val VALUE_FLAGS =
         "--max-bytes",
         "--max-size",
         "--service",
+        "--health-port",
     )
 
 enum class Dialect { POSTGRES, MYSQL }
@@ -41,6 +47,8 @@ data class QueryLogConfig(
     val maxBytes: Int,
     val maxSize: Long,
     val service: String,
+    /** A local port that only accepts and closes, for the container's healthcheck; null for none. */
+    val healthPort: Int? = null,
 )
 
 private fun fail(problem: String): Nothing = throw UsageException(problem)
@@ -59,6 +67,18 @@ fun parseConfig(args: Array<String>): QueryLogConfig {
     fun number(flag: String): Int? =
         values[flag]?.let { it.toIntOrNull()?.takeIf { n -> n > 0 } ?: fail("$flag must be a positive number") }
 
+    fun port(flag: String): Int? = values[flag]?.let { it.toIntOrNull()?.takeIf { n -> n in 1..65535 } ?: fail("$flag must be 1-65535") }
+
+    fun path(
+        flag: String,
+        text: String,
+    ): Path =
+        try {
+            Path.of(text)
+        } catch (_: InvalidPathException) {
+            fail("$flag is not a valid path")
+        }
+
     val dialect =
         when (values["--dialect"] ?: fail("--dialect is required")) {
             "postgres" -> Dialect.POSTGRES
@@ -68,7 +88,8 @@ fun parseConfig(args: Array<String>): QueryLogConfig {
     val upstream = values["--upstream"]?.takeIf { it.isNotBlank() } ?: fail("--upstream is required")
     val colon = upstream.lastIndexOf(':')
     if (colon <= 0) fail("--upstream must be host:port")
-    val upstreamPort = upstream.substring(colon + 1).toIntOrNull()?.takeIf { it in 1..65535 } ?: fail("--upstream port must be a number")
+    val upstreamPort = upstream.substring(colon + 1).toIntOrNull()?.takeIf { it in 1..65535 } ?: fail("--upstream port must be 1-65535")
+    val upstreamHost = upstream.substring(0, colon).removeSurrounding("[", "]")
     val tlsPath = values["--tls"]
     val passwordFile = values["--tls-password-file"]
     if ((tlsPath == null) != (passwordFile == null)) fail("--tls and --tls-password-file go together")
@@ -76,18 +97,18 @@ fun parseConfig(args: Array<String>): QueryLogConfig {
         tlsPath?.let {
             val password =
                 try {
-                    Files.readString(Path.of(passwordFile!!)).trim()
-                } catch (e: java.io.IOException) {
+                    Files.readString(path("--tls-password-file", passwordFile!!)).trim()
+                } catch (e: IOException) {
                     fail("cannot read --tls-password-file: ${e.message}")
                 }
-            TlsFiles(Path.of(it), password)
+            TlsFiles(path("--tls", it), password)
         }
     return QueryLogConfig(
         dialect = dialect,
-        listen = number("--listen") ?: fail("--listen is required"),
-        upstreamHost = upstream.substring(0, colon),
+        listen = port("--listen") ?: fail("--listen is required"),
+        upstreamHost = upstreamHost,
         upstreamPort = upstreamPort,
-        log = Path.of(values["--log"] ?: fail("--log is required")),
+        log = path("--log", values["--log"] ?: fail("--log is required")),
         tls = tls,
         maxRows = number("--max-rows") ?: DEFAULT_MAX_ROWS,
         maxBytes = number("--max-bytes") ?: DEFAULT_MAX_BYTES,
@@ -95,14 +116,29 @@ fun parseConfig(args: Array<String>): QueryLogConfig {
             values["--max-size"]?.let { it.toLongOrNull()?.takeIf { n -> n > 0 } ?: fail("--max-size must be a positive number") }
                 ?: DEFAULT_MAX_SIZE,
         service = values["--service"] ?: dialect.name.lowercase(),
+        healthPort = port("--health-port"),
     )
+}
+
+/** Accepts and closes connections on [port] (loopback only), so a healthcheck never reaches the database. */
+private fun serveHealth(port: Int) {
+    val socket = ServerSocket(port, 50, InetAddress.getLoopbackAddress())
+    thread(isDaemon = true, name = "dblog-health") {
+        while (true) {
+            try {
+                socket.accept().close()
+            } catch (_: IOException) {
+                Thread.sleep(100)
+            }
+        }
+    }
 }
 
 private fun usage(problem: String): Nothing {
     System.err.println("gantry-dblog: $problem")
     System.err.println(
         "usage: gantry-dblog --dialect postgres|mysql --listen PORT --upstream HOST:PORT --log FILE " +
-            "[--tls P12 --tls-password-file FILE] [--max-rows N] [--max-bytes N] [--max-size N] [--service NAME]",
+            "[--tls P12 --tls-password-file FILE] [--max-rows N] [--max-bytes N] [--max-size N] [--service NAME] [--health-port PORT]",
     )
     exitProcess(2)
 }
@@ -132,6 +168,7 @@ fun main(args: Array<String>) {
                 stop = it::stop
             }
     }
+    c.healthPort?.let(::serveHealth)
     Runtime.getRuntime().addShutdownHook(
         Thread {
             runCatching(stop)

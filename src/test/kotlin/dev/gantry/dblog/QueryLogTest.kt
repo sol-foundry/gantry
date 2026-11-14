@@ -194,4 +194,18 @@ class QueryLogTest {
         assertFailsWith<GantryException> { parseQueryTime("9999999999999d", now) }
         assertFailsWith<GantryException> { parseQueryTime("9223372036854775807s", now) }
     }
+
+    @Test
+    fun `a log the host cannot write, with the proxy stopped, says how to clear it`() {
+        write(entry("1"))
+        if (!Files.getFileStore(file).supportsFileAttributeView("posix")) return
+        Files.setPosixFilePermissions(
+            file,
+            java.nio.file.attribute.PosixFilePermissions
+                .fromString("r--r--r--"),
+        )
+        if (Files.isWritable(file)) return
+        val e = assertFailsWith<GantryException> { QueryLog(file) { ExecResult.NOT_RUNNING }.clear() }
+        assertTrue("start the app" in e.message.orEmpty(), e.message)
+    }
 }
