@@ -534,6 +534,45 @@ class PgSessionTest {
     }
 
     @Test
+    fun `closing mid-result logs the statement in progress as truncated`() {
+        val s = session()
+        s.client(Pg.parse("", "select n from big"), Pg.bind("", ""), Pg.execute(""), Pg.sync())
+        s.server(Pg.parseComplete(), Pg.bindComplete(), Pg.dataRow("1"), Pg.dataRow("2"))
+        s.close()
+
+        val e = entries.single()
+        assertEquals("select n from big", e.sql)
+        assertEquals(listOf(listOf<String?>("1"), listOf("2")), e.rows)
+        assertTrue(e.truncated)
+        assertNull(e.error)
+    }
+
+    @Test
+    fun `closing logs a held simple-query batch and a suspended portal`() {
+        val s = session()
+        s.client(Pg.parse("", "select n from big"), Pg.bind("c1", ""), Pg.execute("c1", 1), Pg.sync())
+        s.server(Pg.parseComplete(), Pg.bindComplete(), Pg.dataRow("1"), Pg.portalSuspended(), Pg.ready('T'))
+        s.client(Pg.query("select 1; select 2"))
+        s.server(
+            Pg.rowDescription("a" to INT4),
+            Pg.dataRow("1"),
+            Pg.commandComplete("SELECT 1"),
+            Pg.rowDescription("b" to INT4),
+            Pg.dataRow("2"),
+        )
+        assertTrue(entries.isEmpty())
+        s.close()
+        s.close()
+
+        val bySql = entries.associateBy { it.sql }
+        assertEquals(setOf("select n from big", "select 1", "select 2"), bySql.keys)
+        assertTrue(bySql.getValue("select n from big").truncated)
+        assertEquals(false, bySql.getValue("select 1").truncated)
+        assertEquals(listOf(listOf<String?>("2")), bySql.getValue("select 2").rows)
+        assertTrue(bySql.getValue("select 2").truncated)
+    }
+
+    @Test
     fun `unexpected input never throws`() {
         val s = session()
         s.fromClient(PgMessage('P', byteArrayOf(1, 2)))

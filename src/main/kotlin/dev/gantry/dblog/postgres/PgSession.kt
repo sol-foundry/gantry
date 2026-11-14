@@ -176,6 +176,7 @@ class PgSession(
         var current: Run? = null
         var next: Instant? = null
         var failed = false
+        var partial = false
 
         fun run(now: Instant): Run =
             current ?: Run(sql, null, budget).also {
@@ -189,9 +190,11 @@ class PgSession(
     private val portals = HashMap<String, Portal>()
     private val queue = ArrayDeque<Pending>()
     private val suspended = LinkedHashSet<Run>()
+    private var closed = false
 
     @Synchronized
     fun fromClient(message: PgMessage) {
+        if (closed) return
         try {
             onClient(message, Instant.now())
         } catch (_: Exception) {
@@ -201,10 +204,50 @@ class PgSession(
 
     @Synchronized
     fun fromServer(message: PgMessage) {
+        if (closed) return
         try {
             onServer(message, Instant.now())
         } catch (_: Exception) {
             // Malformed or unexpected input: skip the message.
+        }
+    }
+
+    /**
+     * The connection dropped: logs what is still held (a simple query's finished statements, the statement receiving
+     * rows, suspended portals), the unfinished ones marked truncated. Later messages are ignored.
+     */
+    @Synchronized
+    fun close() {
+        if (closed) return
+        closed = true
+        try {
+            val now = Instant.now()
+            val head = queue.firstOrNull()
+            queue.clear()
+            when (head) {
+                is SimpleP -> {
+                    val unfinished = head.current ?: if (head.results.isEmpty()) head.run(now) else null
+                    unfinished?.let { run ->
+                        run.truncated = true
+                        complete(run, null, null, now)
+                        head.results += run
+                        head.partial = true
+                    }
+                    emitSimple(head)
+                }
+                is ExecuteP ->
+                    if (head.run.start != null) {
+                        head.run.truncated = true
+                        finish(head.run, null, null, now)
+                    }
+                else -> Unit
+            }
+            suspended.toList().forEach {
+                it.truncated = true
+                finish(it, null, null, now)
+            }
+        } catch (_: Exception) {
+            // Nothing more to log.
         }
     }
 
@@ -424,7 +467,8 @@ class PgSession(
 
     private fun emitSimple(query: SimpleP) {
         val pieces = splitSql(query.sql)
-        val labelled = pieces.size > 1 && (pieces.size == query.results.size || query.failed && query.results.size <= pieces.size)
+        val cutShort = (query.failed || query.partial) && query.results.size <= pieces.size
+        val labelled = pieces.size > 1 && (pieces.size == query.results.size || cutShort)
         query.results.forEachIndexed { i, run ->
             if (labelled) run.sql = pieces[i]
             emitRun(run)
