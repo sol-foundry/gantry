@@ -156,6 +156,13 @@ class MySession(
     ) : Results() {
         override val binary = true
         private var resolved: Run? = null
+        val statementId: Int? =
+            runCatching {
+                MyReader(packet.payload).let {
+                    it.byte()
+                    it.int32()
+                }
+            }.getOrNull()
 
         // Decoded only once the response arrives, so the statement's prepare response has been seen whichever thread ran first.
         override fun newRun(start: Instant): Run {
@@ -172,8 +179,10 @@ class MySession(
         var remaining = 0
     }
 
-    /** COM_STMT_FETCH or COM_FIELD_LIST: rows or definitions up to an EOF, not logged. */
-    private class Fetch : Pending()
+    /** COM_STMT_FETCH (rows added to the [statement]'s open cursor) or COM_FIELD_LIST (definitions, not logged), up to an EOF. */
+    private class Fetch(
+        val statement: Int? = null,
+    ) : Pending()
 
     /** A command answered by a single packet; [onOk] runs when it is an OK. */
     private class Reply(
@@ -193,6 +202,9 @@ class MySession(
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, Statement>?) = size > MAX_STATEMENTS
         }
     private val queue = ArrayDeque<Pending>()
+
+    /** Executes whose cursor is open, by statement id: their rows arrive through COM_STMT_FETCH. */
+    private val cursors = HashMap<Int, Run>()
     private var greeted = false
     private var authenticated = false
     private var loggedIn = false
@@ -234,14 +246,19 @@ class MySession(
         try {
             val head = queue.firstOrNull()
             queue.clear()
+            val now = Instant.now()
             if (head is Results) {
-                val now = Instant.now()
                 val run = head.run ?: if (head.stage == Stage.FIRST && head.index == 0) head.begin(now) else null
                 run?.let {
                     it.truncated = true
                     finish(it, null, null, now)
                 }
             }
+            cursors.values.forEach {
+                it.truncated = true
+                finish(it, null, null, now)
+            }
+            cursors.clear()
         } catch (_: Exception) {
             // Nothing more to log.
         }
@@ -268,12 +285,38 @@ class MySession(
             COM_QUERY -> enqueue(querySql(r, p), now)
             COM_STMT_PREPARE -> enqueue(Prepare(r.rest(), p.cut), now)
             COM_STMT_EXECUTE -> enqueue(Execute(p), now)
-            COM_STMT_FETCH, COM_FIELD_LIST -> enqueue(Fetch(), now)
+            COM_STMT_FETCH -> enqueue(Fetch(r.int32()), now)
+            COM_FIELD_LIST -> enqueue(Fetch(), now)
             COM_INIT_DB, COM_PING, COM_SET_OPTION, COM_STATISTICS -> enqueue(Reply(), now)
-            COM_STMT_RESET -> r.int32().let { id -> enqueue(Reply { statements[id]?.clearLongData() }, now) }
-            COM_RESET_CONNECTION -> enqueue(Reply { statements.clear() }, now)
+            COM_STMT_RESET ->
+                r.int32().let { id ->
+                    enqueue(
+                        Reply {
+                            statements[id]?.clearLongData()
+                            closeCursor(id)
+                        },
+                        now,
+                    )
+                }
+            COM_RESET_CONNECTION ->
+                enqueue(
+                    Reply {
+                        statements.clear()
+                        closeCursors()
+                    },
+                    now,
+                )
             COM_CHANGE_USER -> enqueue(ChangeUser(), now)
-            COM_STMT_CLOSE -> r.int32().let { id -> enqueue(Action { statements.remove(id) }, now) }
+            COM_STMT_CLOSE ->
+                r.int32().let { id ->
+                    enqueue(
+                        Action {
+                            statements.remove(id)
+                            closeCursor(id)
+                        },
+                        now,
+                    )
+                }
             COM_STMT_SEND_LONG_DATA -> {
                 val id = r.int32()
                 val param = r.int16()
@@ -374,9 +417,15 @@ class MySession(
         when (head) {
             is Results -> results(head, p, first, now)
             is Prepare -> prepared(head, p, first, now)
-            is Fetch -> first == 0xFF || isEnd(p, first)
+            is Fetch -> fetched(head, p, first, now)
             is Reply -> true.also { if (first == 0x00) head.onOk() }
-            is ChangeUser -> (first == 0x00 || first == 0xFF).also { if (first == 0x00) statements.clear() }
+            is ChangeUser ->
+                (first == 0x00 || first == 0xFF).also {
+                    if (first == 0x00) {
+                        statements.clear()
+                        closeCursors()
+                    }
+                }
             is Action -> true
         }
 
@@ -387,7 +436,8 @@ class MySession(
         now: Instant,
     ): Boolean {
         when (head.stage) {
-            Stage.FIRST ->
+            Stage.FIRST -> {
+                if (head is Execute && head.index == 0) head.statementId?.let(::closeCursor)
                 when (first) {
                     0x00 -> {
                         val ok = ok(p)
@@ -409,6 +459,7 @@ class MySession(
                         head.stage = if (count > 0) Stage.COLUMNS else afterColumns()
                     }
                 }
+            }
             Stage.COLUMNS -> {
                 val run = head.run!!
                 run.columns!! += column(p)
@@ -418,17 +469,13 @@ class MySession(
                 if (first == 0xFF) return failed(head, p, now)
                 val status = eofStatus(p)
                 head.stage = Stage.ROWS
-                // A cursor was opened: the rows come later through COM_STMT_FETCH.
-                if (status and SERVER_STATUS_CURSOR_EXISTS != 0) {
-                    finish(head.run!!, null, null, now)
-                    head.run = null
-                    return true
-                }
+                if (status and SERVER_STATUS_CURSOR_EXISTS != 0) return openCursor(head)
             }
             Stage.ROWS ->
                 when {
                     isEnd(p, first) -> {
                         val status = if (deprecateEof) ok(p).status else eofStatus(p)
+                        if (status and SERVER_STATUS_CURSOR_EXISTS != 0 && head.run!!.rows.isEmpty()) return openCursor(head)
                         finish(head.run!!, null, null, now)
                         head.run = null
                         return more(head, status, now)
@@ -438,6 +485,57 @@ class MySession(
                 }
         }
         return false
+    }
+
+    /** A cursor was opened: the rows come later through COM_STMT_FETCH, so the entry waits for its last row or its close. */
+    private fun openCursor(head: Results): Boolean {
+        val run = head.run!!
+        head.run = null
+        val id = (head as? Execute)?.statementId
+        if (id == null) {
+            finish(run, null, null, Instant.now())
+        } else {
+            closeCursor(id)
+            cursors[id] = run
+        }
+        return true
+    }
+
+    private fun fetched(
+        head: Fetch,
+        p: MyPacket,
+        first: Int,
+        now: Instant,
+    ): Boolean {
+        val id = head.statement
+        val run = id?.let { cursors[it] }
+        when {
+            first == 0xFF -> {
+                if (run != null) {
+                    cursors.remove(id)
+                    finish(run, null, error(p), now)
+                }
+                return true
+            }
+            isEnd(p, first) -> {
+                val status = if (deprecateEof) ok(p).status else eofStatus(p)
+                if (run != null && (status and SERVER_STATUS_LAST_ROW_SENT != 0 || status and SERVER_STATUS_CURSOR_EXISTS == 0)) {
+                    cursors.remove(id)
+                    finish(run, null, null, now)
+                }
+                return true
+            }
+            else -> run?.addRow(p, binary = true)
+        }
+        return false
+    }
+
+    private fun closeCursor(id: Int) {
+        cursors.remove(id)?.let { finish(it, null, null, Instant.now()) }
+    }
+
+    private fun closeCursors() {
+        cursors.keys.toList().forEach(::closeCursor)
     }
 
     private fun afterColumns() = if (deprecateEof) Stage.ROWS else Stage.COLUMNS_EOF
@@ -708,6 +806,7 @@ class MySession(
 
         const val SERVER_MORE_RESULTS_EXISTS = 0x0008
         const val SERVER_STATUS_CURSOR_EXISTS = 0x0040
+        const val SERVER_STATUS_LAST_ROW_SENT = 0x0080
         const val PARAMETER_COUNT_AVAILABLE = 0x08
         const val UNSIGNED_FLAG = 0x20
 

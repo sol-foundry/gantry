@@ -156,6 +156,13 @@ internal object My {
 
     fun prepare(sql: String) = packet(0) { byte(0x16).string(sql) }
 
+    fun fetch(
+        id: Int,
+        rows: Int,
+    ) = packet(0) { byte(0x1C).int32(id).int32(rows) }
+
+    fun close(id: Int) = packet(0) { byte(0x19).int32(id) }
+
     fun prepareOk(
         id: Int,
         columns: Int,
@@ -637,5 +644,66 @@ class MySessionTest {
         s.server(My.ok())
 
         assertEquals("select 1", entries.last().sql)
+    }
+
+    private fun MySession.prepareCursor(deprecateEof: Boolean) {
+        client(My.prepare("select id from t where id > ?"))
+        if (deprecateEof) {
+            server(My.prepareOk(id = 1, columns = 1, params = 1), My.column("?", My.T_LONG), My.column("id", My.T_LONG))
+        } else {
+            server(My.prepareOk(id = 1, columns = 1, params = 1), My.column("?", My.T_LONG), My.eof(), My.column("id", My.T_LONG), My.eof())
+        }
+        client(My.execute(1, listOf(My.T_LONG to My.int4(0))))
+        server(My.columnCount(1), My.column("id", My.T_LONG))
+    }
+
+    private fun end(
+        deprecateEof: Boolean,
+        status: Int,
+    ) = if (deprecateEof) My.ok(header = 0xFE, status = status) else My.eof(status = status)
+
+    @Test
+    fun `rows fetched through a cursor belong to the execute that opened it`() {
+        listOf(false, true).forEach { deprecateEof ->
+            entries.clear()
+            val s = session(caps = if (deprecateEof) My.CLIENT or My.DEPRECATE_EOF else My.CLIENT)
+            s.prepareCursor(deprecateEof)
+            s.server(end(deprecateEof, My.AUTOCOMMIT or CURSOR_EXISTS))
+            assertTrue(entries.isEmpty(), "still open")
+
+            s.client(My.fetch(1, 2))
+            s.server(My.binaryRow(My.int4(1)), My.binaryRow(My.int4(2)), end(deprecateEof, My.AUTOCOMMIT or CURSOR_EXISTS))
+            s.client(My.fetch(1, 2))
+            s.server(My.binaryRow(My.int4(3)), end(deprecateEof, My.AUTOCOMMIT or CURSOR_EXISTS or LAST_ROW_SENT))
+            s.client(My.query("select 2"))
+            s.server(My.ok())
+
+            val cursor = entries.first()
+            assertEquals("select id from t where id > ?", cursor.sql, "deprecateEof=$deprecateEof")
+            assertEquals(listOf<String?>("0"), cursor.params)
+            assertEquals(listOf(listOf<String?>("1"), listOf("2"), listOf("3")), cursor.rows)
+            assertEquals(3L, cursor.rowCount)
+            assertEquals(listOf("select 2"), entries.drop(1).map { it.sql })
+        }
+    }
+
+    @Test
+    fun `a cursor closed before its last row is logged with the rows fetched`() {
+        val s = session()
+        s.prepareCursor(deprecateEof = false)
+        s.server(My.eof(status = My.AUTOCOMMIT or CURSOR_EXISTS))
+        s.client(My.fetch(1, 1))
+        s.server(My.binaryRow(My.int4(1)), My.eof(status = My.AUTOCOMMIT or CURSOR_EXISTS))
+        s.client(My.close(1))
+        s.client(My.query("select 2"))
+        s.server(My.ok())
+
+        assertEquals(listOf("select id from t where id > ?", "select 2"), entries.map { it.sql })
+        assertEquals(1L, entries.first().rowCount)
+    }
+
+    private companion object {
+        const val CURSOR_EXISTS = 0x0040
+        const val LAST_ROW_SENT = 0x0080
     }
 }

@@ -236,8 +236,10 @@ database's `main` port, so `gantry env` and your connection settings stay exactl
 - `gantry db queries my-app [service] [--search TEXT] [--since 15m] [--from T] [--to T] [--limit N] [-f]` prints
   them as a table, oldest first; `-f` keeps printing new ones. The service is needed only when the app has both
   databases. `gantry db clear my-app [service]` empties the log; new statements keep being recorded.
-- Coding agents connected with `gantry mcp install` get a `get_db_queries` tool with the same search and time
-  filter, so they can see what your app actually ran and got back.
+- Coding agents connected with `gantry mcp install` get a `get_db_queries` tool with search and since filters,
+  so they can see what your app actually ran; passing a statement's `id` returns it with its result rows.
+- Errors show the database's own code: the SQLSTATE for Postgres (`42P01`), `<errno>/<sqlstate>` for MySQL
+  (`1146/42S02`).
 
 Everything is recorded as is, nothing redacted: background traffic (schedulers, pool checks, migrations your app
 runs) and the queries agents run with `psql` or `mysql` show up beside your app's own, told apart by the client
@@ -257,7 +259,7 @@ Options (per database, `--set key=value`):
 |---|---|---|
 | `query_log` | `true` | `false` runs no proxy: the database sits on `main` itself and nothing is recorded |
 | `query_log_max_rows` | `1000` | result rows kept per statement; past it the first rows are kept with the total count |
-| `query_log_max_bytes` | `1048576` (1 MB) | result data kept per statement; values or rows past it are cut and marked |
+| `query_log_max_bytes` | `1048576` (1 MB) | SQL, each parameter and the result data kept per statement; past it they are cut and marked |
 | `query_log_max_size` | `209715200` (200 MB) | size of the whole log per database; past it the oldest entries go first |
 
 The log lives in the app's `db-log/<service>.jsonl` and survives restarts until trimmed or cleared. Recording never
@@ -265,6 +267,8 @@ holds your app up: if the proxy falls behind, it drops result rows first, and ev
 parameters, timing and outcome. Turning `query_log` on or off keeps the data: the next `gantry start` stops the
 database, then brings it back under its new name (`<service>-db` behind the proxy) on the same volume. Other
 containers in the app reach the database through the proxy as `postgres` / `mysql`, like the app does.
+`gantry logs my-app postgres` and the dashboard show the database's own log beside the proxy's (name `postgres-db`
+for the database alone), and the service's status is the worse of the two.
 
 ## Data persistence
 

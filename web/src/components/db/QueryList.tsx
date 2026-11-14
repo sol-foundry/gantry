@@ -210,7 +210,7 @@ function QueryDetail({ app, service, listed, onClose }: { app: string; service: 
         columns: q.columns,
         rows: q.rows ?? [],
         truncated: q.truncated,
-        note: q.truncated && q.rowCount !== null ? `showing ${number(shown)} of ${number(q.rowCount)} rows` : undefined,
+        note: q.rowCount !== null && shown < q.rowCount ? `showing ${number(shown)} of ${number(q.rowCount)} rows` : undefined,
         clippedCells: [],
       }
     : undefined;

@@ -27,6 +27,7 @@ import type { DdlRequest, SourceInfo, SqlService } from "@/types";
 const PANEL = "flex flex-col";
 
 const SYNC_POLL_MS = 2000;
+const STATUS_POLL_MS = 5000;
 
 /** Postgres / MySQL explorer: browse and edit tables, change the schema, run Flyway migrations, or use SQL. */
 export function DatabasePage({ app, service }: { app: string; service: SqlService }) {
@@ -37,7 +38,9 @@ export function DatabasePage({ app, service }: { app: string; service: SqlServic
   const [refreshKey, setRefreshKey] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const source = useLoad(() => api.db(app, service).source(), [app, service]);
-  const queryLog = useLoad(() => api.status(app), [app, service]).data?.services.find((s) => s.id === service)?.options.query_log === "true";
+  // Polled like the app page, so turning the query log on or off elsewhere shows or hides the tab.
+  const status = useLoad(() => api.status(app), [app], STATUS_POLL_MS);
+  const queryLog = status.data?.services.find((s) => s.id === service)?.options.query_log === "true";
   const syncRunning = source.data?.job?.state === "running";
 
   // Follow a running sync (started here, from the CLI, or before a reload) so the button shows it, then refresh once done.

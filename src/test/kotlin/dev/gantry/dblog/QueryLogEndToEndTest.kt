@@ -105,6 +105,16 @@ class QueryLogEndToEndTest {
         val started = eventTime("$app-postgres-db", "start", since, until)
         assertTrue(died < started, "the old database stopped ($died) before the new one started ($started)")
         assertContains(docker("logs", "$app-postgres-db"), "database system was shut down at")
+        val logs = engine.docker.logs(app, "postgres", 500)
+        assertContains(logs, "database system is ready to accept connections")
+        assertContains(logs, "$app-postgres-db")
+        assertContains(logs, "$app-postgres ")
+        val pgStatus =
+            engine.docker
+                .status(app)
+                .services
+                .single { it.id == "postgres" }
+        assertEquals("running" to "healthy", pgStatus.state to pgStatus.health)
 
         pg("disable", "e2e-kept").use { c -> assertEquals("before the proxy", c.single("SELECT note FROM kept WHERE id = 1")) }
         val entry = awaitEntry("postgres") { it.sql == "SELECT note FROM kept WHERE id = 1" }
@@ -234,7 +244,7 @@ class QueryLogEndToEndTest {
             val timedOut =
                 c.createStatement().use { s ->
                     s.queryTimeout = 1
-                    runCatching { s.executeQuery("SELECT SLEEP(30)").use { r -> r.next() } }.exceptionOrNull()
+                    runCatching { s.executeQuery("SELECT id FROM items WHERE SLEEP(30)").use { r -> r.next() } }.exceptionOrNull()
                 }
             assertTrue(timedOut is SQLTimeoutException, "timed out: $timedOut")
             assertTrue(System.nanoTime() - started < TimeUnit.SECONDS.toNanos(10), "the KILL QUERY reached the database")
@@ -266,9 +276,11 @@ class QueryLogEndToEndTest {
         assertEquals(25L, big.rowCount)
         assertTrue(big.truncated)
         assertEquals("1146/42S02", awaitEntry("mysql") { it.sql == "SELECT * FROM no_such_table" }.error?.code)
-        awaitEntry("mysql") { it.sql == "SELECT SLEEP(30)" }
+        // SLEEP alone swallows a KILL QUERY (it returns 1); in a WHERE the statement fails with ER_QUERY_INTERRUPTED.
+        assertEquals("1317/70100", awaitEntry("mysql") { it.sql == "SELECT id FROM items WHERE SLEEP(30)" }.error?.code)
         assertEquals("e2e-my-plain", awaitEntry("mysql") { it.sql == "SELECT name FROM items WHERE id = 3" }.client)
-        awaitEntry("mysql") { it.sql == "SELECT id FROM items WHERE id > ? ORDER BY id" && it.params == listOf("0") }
+        val cursor = awaitEntry("mysql") { it.sql == "SELECT id FROM items WHERE id > ? ORDER BY id" && it.params == listOf("0") }
+        assertEquals(25L, cursor.rowCount)
         val after = awaitEntry("mysql") { it.sql == "SELECT name FROM items WHERE id = 4" }
         assertEquals("e2e-my-cursor", after.client)
         assertEquals(listOf(listOf<String?>("item-4")), after.rows)
