@@ -20,11 +20,13 @@ import dev.gantry.db.INTERRUPTED_PHASE
 import dev.gantry.db.Migrations
 import dev.gantry.db.SourceCheck
 import dev.gantry.db.Sync
+import dev.gantry.db.parseTables
 import dev.gantry.engine.Catalog
 import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
 import dev.gantry.engine.Presets
 import dev.gantry.engine.SourceSettings
+import dev.gantry.gateway.GATEWAY
 import dev.gantry.server.startDashboard
 import dev.gantry.share.ExportedPath
 import dev.gantry.share.Exporter
@@ -60,6 +62,9 @@ fun main(args: Array<String>) {
                 Export(engine),
                 Import(engine),
                 SyncCommand(engine),
+                GatewayCommand(engine),
+                AuthorizerCommand(engine),
+                SecretCommand(engine),
                 Mcp(engine),
                 Dashboard(engine),
             ).main(args)
@@ -112,14 +117,14 @@ private class ListApps(
 internal class Create(
     private val engine: Engine,
 ) : CliktCommand(name = "create") {
-    override fun help(context: Context) = "Create an app and optionally add services (database, cache, queue, ...)."
+    override fun help(context: Context) = "Create an app and optionally add services (postgres, valkey, elasticmq, ...)."
 
     private val app by argument()
     private val services by option(
         "--services",
         "-s",
         metavar = "SERVICE...",
-        help = "Services to add, e.g. --services database cache queue (see `gantry services`).",
+        help = "Services to add, e.g. --services postgres valkey elasticmq (see `gantry services`).",
     ).varargValues().default(emptyList())
 
     // Services listed without the flag, as earlier versions took them; kept so existing scripts keep working.
@@ -351,8 +356,9 @@ private class Export(
     }
 }
 
-private class Import(
+internal class Import(
     private val engine: Engine,
+    private val importer: Importer = Importer(engine),
 ) : CliktCommand(name = "import") {
     override fun help(context: Context) = "Create (or replace) an app from an exported file, after showing what will happen."
 
@@ -369,7 +375,6 @@ private class Import(
 
     override fun run() {
         val exported = parseExportFile(Files.readString(Path.of(file)))
-        val importer = Importer(engine)
         val preview = importer.preview(exported, asName)
         val request =
             applyOverrides(
@@ -386,10 +391,20 @@ private class Import(
             System.err.print("${if (preview.exists) "replace" else "create"} '${request.app}'? [y/N] ")
             if (readlnOrNull()?.trim()?.lowercase()?.startsWith("y") != true) throw GantryException("aborted")
         }
-        val app = importer.apply(request)
+        val imported = importer.importApp(request)
+        val app = imported.app
         echo("imported '${app.name}' (${app.services.size} services); next: gantry start ${app.name} && gantry env ${app.name}")
+        imported.gateway?.let { applied ->
+            applied.recorded.forEach { echo("authorizer $it: using the image already built on this machine") }
+            applied.toPush.forEach { (name, dir) ->
+                echo("authorizer $name is not built on this machine; run: gantry authorizer push ${app.name} $name $dir")
+            }
+            applied.unsetSecrets.forEach { echo("secret $it is not set; run: gantry secret set ${app.name} $it") }
+        }
         if (request.services.values.any { it.source?.complete() == true }) echo("next: gantry sync ${app.name}")
     }
+
+    private fun isGateway(service: String) = runCatching { engine.catalog.resolve(service).id }.getOrNull() == GATEWAY
 
     private fun printPreview(
         request: ImportRequest,
@@ -415,6 +430,10 @@ private class Import(
             imported.source?.let { echo("    source: ${it.user}@${it.host}:${it.port}/${it.database}") }
         }
         request.envNames.forEach { (key, name) -> echo("  env $key -> ${name.ifEmpty { "(omitted)" }}") }
+        request.gateway?.takeIf { request.services.keys.any { isGateway(it) } }?.let { gateway ->
+            echo("  gateway.yml from the file")
+            gateway.authorizers.forEach { echo("  authorizer ${it.name} (${listOfNotNull(it.dir.repo, it.dir.path).joinToString(": ")})") }
+        }
         warnings.forEach { echo("warning: $it") }
     }
 }
@@ -528,7 +547,8 @@ private fun bad(text: String) = GantryException("expected <service>.<option>=<va
 private class SyncCommand(
     private val engine: Engine,
 ) : CliktCommand(name = "sync") {
-    override fun help(context: Context) = "Replace a local database with a copy of a source database (usually stage)."
+    override fun help(context: Context) =
+        "Replace a local database, or just some of its tables (--table), with a copy from a source database (usually stage)."
 
     private val app by argument()
     private val service by option("--service", help = "postgres or mysql; needed only when the app has both.")
@@ -536,6 +556,12 @@ private class SyncCommand(
         "--source",
         metavar = "FIELD=VALUE",
         help = "Change the saved source: host, port, database, user (repeatable). Saved once the sync succeeds.",
+    ).multiple()
+    private val tables by option(
+        "--table",
+        "-t",
+        metavar = "TABLE",
+        help = "Copy only this table (repeatable): table, or schema.table on Postgres. Other tables are left alone.",
     ).multiple()
     private val yes by option("--yes", "-y", help = "Skip the confirmation prompt.").flag()
 
@@ -548,6 +574,8 @@ private class SyncCommand(
                     if (targets.isEmpty()) "app '$app' has no postgres or mysql service" else "app has several databases; pass --service",
                 )
         val id = target.service
+        // Checked before any prompt, so a typo doesn't cost the password round trip.
+        val scope = if (tables.isEmpty()) emptyList() else parseTables(target.dialect, tables).map { it.toString() }
         val sync = Sync(engine)
         sync
             .job(app, id)
@@ -586,13 +614,18 @@ private class SyncCommand(
 
         if (!yes) {
             val local = target.database
+            val from = "${source.user}@${source.host}:${source.port}/${source.database}"
             System.err.print(
-                "Replace all data in $local of $app with a copy of ${source.user}@${source.host}:${source.port}/${source.database}? " +
-                    "Local data will be deleted. [y/N] ",
+                if (scope.isEmpty()) {
+                    "Replace all data in $local of $app with a copy of $from? Local data will be deleted. [y/N] "
+                } else {
+                    "Replace all rows of ${scope.joinToString()} in $local of $app with the rows from $from? " +
+                        "Other tables are left alone. [y/N] "
+                },
             )
             if (readlnOrNull()?.trim()?.lowercase()?.startsWith("y") != true) throw GantryException("aborted")
         }
-        val job = sync.runBlocking(app, id, source, password) { echo(it) }
+        val job = sync.runBlocking(app, id, source, password, scope) { echo(it) }
         if (job.state != "succeeded") throw GantryException(job.message ?: "sync failed")
         echo(job.message ?: "synced $id of '$app'")
     }

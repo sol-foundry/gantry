@@ -24,6 +24,35 @@ class SecretsTest {
     }
 
     @Test
+    fun `gateway secrets are kept per app and forgotten with it`() {
+        val store = SecretStore(Files.createTempDirectory("gantry-secrets"))
+        store.setSecret("shop", "API_KEY", "k1")
+        store.setPassword("shop", "postgres", "pw")
+        assertEquals("k1", store.secret("shop", "API_KEY"))
+        assertNull(store.secret("billing", "API_KEY"))
+        assertEquals("pw", store.password("shop", "postgres"))
+
+        store.forget("shop")
+        assertNull(store.secret("shop", "API_KEY"))
+    }
+
+    @Test
+    fun `gateway secrets are listed by name and forgotten one at a time`() {
+        val store = SecretStore(Files.createTempDirectory("gantry-secrets"))
+        store.setSecret("shop", "B", "2")
+        store.setSecret("shop", "A", "1")
+        store.setSecret("billing", "C", "3")
+        store.setPassword("shop", "postgres", "pw")
+        assertEquals(listOf("A", "B"), store.secretNames("shop"))
+
+        assertTrue(store.forgetSecret("shop", "A"))
+        assertFalse(store.forgetSecret("shop", "A"))
+        assertEquals(listOf("B"), store.secretNames("shop"))
+        assertEquals("pw", store.password("shop", "postgres"))
+        assertEquals("3", store.secret("billing", "C"))
+    }
+
+    @Test
     fun `forget removes one service or the whole app`() {
         val store = SecretStore(Files.createTempDirectory("gantry-secrets"))
         store.setPassword("shop", "postgres", "a")

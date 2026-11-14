@@ -155,6 +155,8 @@ export function DatabasePage({ app, service }: { app: string; service: SqlServic
                   refreshKey={refreshKey}
                   onDdl={requestDdl}
                   onChanged={info.reload}
+                  source={source.data}
+                  onSourceChanged={source.reload}
                 />
               ) : (
                 !creating && data && <DatabaseOverview info={data} onSelect={select} onDdl={requestDdl} onNewTable={newTable} />

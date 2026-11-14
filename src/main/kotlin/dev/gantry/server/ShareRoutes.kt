@@ -1,8 +1,10 @@
 package dev.gantry.server
 
+import dev.gantry.db.Dialect
 import dev.gantry.db.SourceCheck
 import dev.gantry.db.Sync
 import dev.gantry.db.SyncJob
+import dev.gantry.db.parseTables
 import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
 import dev.gantry.engine.SourceSettings
@@ -37,10 +39,13 @@ private data class ImportValidation(
     val exists: Boolean,
 )
 
+/** [toPush] (authorizer to the directory to push it from) and [unsetSecrets] are what the gateway section left to do. */
 @Serializable
 private data class ImportApplied(
     val ok: Boolean,
     val app: String,
+    val toPush: Map<String, String> = emptyMap(),
+    val unsetSecrets: List<String> = emptyList(),
 )
 
 @Serializable
@@ -69,6 +74,8 @@ private data class SaveSourceRequest(
 private data class SyncRequest(
     val source: SourceSettings = SourceSettings(),
     val password: String? = null,
+    /** Copy only these tables; empty copies the whole database. */
+    val tables: List<String> = emptyList(),
 )
 
 @Serializable
@@ -88,9 +95,8 @@ private suspend fun <T> blocking(work: () -> T): T = withContext(Dispatchers.IO)
 fun Route.shareRoutes(
     engine: Engine,
     sync: Sync,
+    importer: Importer = Importer(engine),
 ) {
-    val importer = Importer(engine)
-
     get("/apps/{app}/export") {
         val app = call.parameters.getOrFail("app")
         val text = blocking { Exporter(engine).export(app).encode() }
@@ -115,8 +121,9 @@ fun Route.shareRoutes(
         }
         post("/apply") {
             val request = call.receive<ImportRequest>()
-            val app = blocking { importer.apply(request) }
-            call.respond(ImportApplied(true, app.name))
+            val imported = blocking { importer.importApp(request) }
+            val gateway = imported.gateway
+            call.respond(ImportApplied(true, imported.app.name, gateway?.toPush.orEmpty(), gateway?.unsetSecrets.orEmpty()))
         }
     }
 
@@ -146,6 +153,15 @@ fun Route.shareRoutes(
             val request = call.receive<SyncRequest>()
             val app = app()
             val service = service()
+            // Checked before the source is contacted, so an unsafe name never reaches the copy.
+            if (request.tables.isNotEmpty()) {
+                val dialect = Dialect.forService(gantryServiceId(engine, service))
+                val invalid = runCatching { parseTables(dialect, request.tables) }.exceptionOrNull()
+                if (invalid != null) {
+                    call.respond(HttpStatusCode.BadRequest, FieldError(invalid.message ?: "invalid table", "tables"))
+                    return@post
+                }
+            }
             val password =
                 blocking {
                     request.password?.takeIf { it.isNotEmpty() } ?: savedPassword(engine, app, service, request.source)
@@ -160,7 +176,7 @@ fun Route.shareRoutes(
             when (probe.result) {
                 SourceCheck.AUTH -> call.respond(HttpStatusCode.Conflict, FieldError(probe.message, "password"))
                 SourceCheck.UNREACHABLE -> call.respond(HttpStatusCode.BadGateway, ErrorBody(probe.message))
-                SourceCheck.OK -> call.respond(blocking { sync.start(app, service, request.source, password!!) })
+                SourceCheck.OK -> call.respond(blocking { sync.start(app, service, request.source, password!!, request.tables) })
             }
         }
     }
@@ -204,3 +220,8 @@ private fun sourceResponse(
 private fun RoutingContext.app(): String = call.parameters.getOrFail("app")
 
 private fun RoutingContext.service(): String = call.parameters.getOrFail("service")
+
+private fun gantryServiceId(
+    engine: Engine,
+    service: String,
+): String = engine.catalog.resolve(service).id

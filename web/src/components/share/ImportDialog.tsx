@@ -17,7 +17,7 @@ import { useAction } from "@/hooks";
 import { useGantry } from "@/lib/gantry";
 import { href, navigate } from "@/lib/router";
 import { ServiceIcon, serviceLabel } from "@/lib/services";
-import type { CatalogService, ImportPreview, ImportRequest, ImportedService, SourceSettings, SqlService } from "@/types";
+import type { CatalogService, ImportApplied, ImportPreview, ImportRequest, ImportedService, SourceSettings, SqlService } from "@/types";
 
 const MIGRATIONS = "migrations";
 const VALIDATE_DEBOUNCE_MS = 300;
@@ -216,8 +216,16 @@ function PreviewStep({
       services: Object.fromEntries(Object.entries(request.services).map(([id, s]) => [id, { ...s, source: anySource(s.source) ? s.source : null }])),
     };
     let app = body.app;
-    if (await run("apply", async () => void (app = (await api.importApply(body)).app))) {
+    let applied: ImportApplied | undefined;
+    if (await run("apply", async () => void (app = (applied = await api.importApply(body)).app))) {
       toast.success(validation.exists ? `Replaced ${app}` : `Imported ${app}`);
+      // Secret values and authorizer images never travel in the file: say what is left to do on this machine.
+      Object.entries(applied?.toPush ?? {}).forEach(([name, dir]) =>
+        toast.info(`Authorizer ${name} is not built on this machine`, { description: `gantry authorizer push ${app} ${name} ${dir}`, duration: Infinity }),
+      );
+      (applied?.unsetSecrets ?? []).forEach((name) =>
+        toast.info(`Secret ${name} is not set`, { description: `gantry secret set ${app} ${name}`, duration: Infinity }),
+      );
       reloadApps();
       onClose();
       navigate(href.app(app));

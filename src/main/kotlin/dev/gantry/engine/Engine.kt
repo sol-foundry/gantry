@@ -1,5 +1,18 @@
 package dev.gantry.engine
 
+import dev.gantry.gateway.AUTHORIZERS_CONTEXT
+import dev.gantry.gateway.GATEWAY
+import dev.gantry.gateway.GatewayRuntime
+import dev.gantry.gateway.PENDING_AUTHORIZERS_CONTEXT
+import dev.gantry.gateway.PushedAuthorizer
+import dev.gantry.gateway.SET_SECRETS_CONTEXT
+import dev.gantry.gateway.encodeAuthorizers
+import dev.gantry.gateway.pendingAuthorizers
+import dev.gantry.gateway.prepareGatewayFiles
+import dev.gantry.gateway.updatePendingAuthorizers
+import dev.gantry.gateway.writeAppliedGatewayConfig
+import dev.gantry.gateway.writeAuthorizerEnvFiles
+import dev.gantry.gateway.writeGatewaySecrets
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import java.net.InetAddress
@@ -8,7 +21,9 @@ import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.nio.file.attribute.FileTime
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 
 internal val appNameRule = Regex("^[a-z][a-z0-9-]*$")
 
@@ -30,6 +45,8 @@ class Engine(
     val home: Path = defaultHome(),
     val catalog: Catalog = Catalog.load(),
     val dockerCommand: String = defaultDockerCommand(),
+    /** The jars gantry-auth runs from; null means the installed distribution's `lib/` (tests pass their own). */
+    private val gatewayLib: Path? = null,
 ) {
     val docker = Docker(this)
     val secrets = SecretStore(home)
@@ -46,7 +63,23 @@ class Engine(
      * The app as saved, without side effects: legacy state is cleaned up in memory only, never written back. For
      * readers that run alongside `up` and the dashboard, such as the agent server.
      */
-    fun readApp(name: String): App = decodeApp(name).let { app -> app.copy(services = app.services.filter { it.id != LEGACY_CACHE_UI }) }
+    fun readApp(name: String): App =
+        renamed(decodeApp(name)).let { app ->
+            app.copy(
+                services =
+                    app.services.filter {
+                        it.id !=
+                            LEGACY_CACHE_UI
+                    },
+            )
+        }
+
+    /** [app] with services and env renames saved under ids and variable names older versions used moved to the current ones. */
+    private fun renamed(app: App): App =
+        app.copy(
+            services = app.services.map { state -> LEGACY_SERVICE_IDS[state.id]?.let { state.copy(id = it) } ?: state },
+            envNames = upgradeEnvNames(app.envNames),
+        )
 
     private fun decodeApp(name: String): App {
         if (!appNameRule.matches(name)) throw GantryException("invalid app name '$name'")
@@ -59,14 +92,27 @@ class Engine(
      * Rewrites state saved by older versions. RedisInsight used to be its own service; it is now valkey's UI, so the
      * entry is dropped and its host port moves to valkey's `ui` port. Container and volume names are unchanged, so
      * the running UI and its registered connection carry over on the next `up`.
+     *
+     * Services that were renamed (`realtime` is now `websocket`) keep their ports; their container gets the new name,
+     * and the next `up` removes the old one as an orphan.
      */
     @Synchronized
     private fun upgrade(app: App): App {
-        if (app.service(LEGACY_CACHE_UI) == null) return app
+        val legacyIds = app.services.map { it.id }.filter { it in LEGACY_SERVICE_IDS }
+        val legacyEnv = app.envNames.keys.any { it in LEGACY_ENV_KEYS }
+        if (app.service(LEGACY_CACHE_UI) == null && legacyIds.isEmpty() && !legacyEnv) return app
         updatePorts { ports ->
             ports.remove("${app.name}/$LEGACY_CACHE_UI/ui")?.let { port -> ports.putIfAbsent("${app.name}/valkey/ui", port) }
+            legacyIds.forEach { old ->
+                val prefix = "${app.name}/$old/"
+                ports.keys.filter { it.startsWith(prefix) }.forEach { key ->
+                    val port = ports.remove(key)!!
+                    ports.putIfAbsent("${app.name}/${LEGACY_SERVICE_IDS.getValue(old)}/${key.removePrefix(prefix)}", port)
+                }
+            }
         }
-        return render(app.copy(services = app.services.filter { it.id != LEGACY_CACHE_UI }))
+        val current = renamed(app)
+        return render(current.copy(services = current.services.filter { it.id != LEGACY_CACHE_UI }))
     }
 
     fun listApps(): List<App> {
@@ -168,7 +214,9 @@ class Engine(
                 throw GantryException("'${state.id}' requires '$it'")
             }
         }
-        val replaced = withEnvNames(App(app.name, services), app.envNames)
+        // Pushed authorizers are images built on this machine, not part of the app's shape, so a replace keeps them.
+        val authorizers = if (Files.exists(appFile(app.name))) loadApp(app.name).authorizers else app.authorizers
+        val replaced = withEnvNames(App(app.name, services, authorizers = authorizers), app.envNames)
         val rendered = render(replaced)
         // Released only after rendering succeeded, so a rejected config leaves the old app's ports intact.
         val kept = services.map { it.id }.toSet()
@@ -213,6 +261,13 @@ class Engine(
         }
         return app.copy(envNames = cleaned)
     }
+
+    /** Replaces the app's pushed custom authorizers and regenerates its files. */
+    @Synchronized
+    fun setAuthorizers(
+        appName: String,
+        authorizers: List<PushedAuthorizer>,
+    ): App = render(loadApp(appName).copy(authorizers = authorizers))
 
     /**
      * Sets or clears (null) where the service syncs its data from. The saved password was typed for one database, so
@@ -340,9 +395,15 @@ class Engine(
             .toString()
     }
 
+    /**
+     * Placeholder values for one service. The gateway also gets its pushed authorizers (as JSON, for its computed
+     * blocks). With [forRender], the gateway also gets `runtime`: the staged jars its
+     * gantry-auth container mounts (staging copies files, so only rendering asks for it).
+     */
     private fun context(
         app: App,
         state: ServiceState,
+        forRender: Boolean = false,
     ): Context {
         val def = catalog.resolve(state.id)
         val dir = appDir(app.name).toAbsolutePath()
@@ -357,6 +418,16 @@ class Engine(
         // Option defaults may reference each other or the app (e.g. database name defaults to {{app_id}}).
         def.options.keys.forEach { context["opt.$it"] = Template.render(context.getValue("opt.$it"), context) }
         state.ports.forEach { (name, port) -> context["port.$name"] = port.toString() }
+        if (def.id == GATEWAY) {
+            context[AUTHORIZERS_CONTEXT] = encodeAuthorizers(app.authorizers)
+            // Names only, never values: the renderer sends a custom authorizer whose env secrets are unset to gantry-auth.
+            context[SET_SECRETS_CONTEXT] = secrets.secretNames(app.name).joinToString("\n")
+            // Authorizers whose container still runs with an older env: their routes go to gantry-auth meanwhile.
+            context[PENDING_AUTHORIZERS_CONTEXT] = pendingAuthorizers(dir).keys.joinToString("\n")
+        }
+        if (forRender && def.id == GATEWAY) {
+            context["runtime"] = (gatewayLib?.let { GatewayRuntime.stage(home, it) } ?: GatewayRuntime.stage(home)).toString()
+        }
         return context
     }
 
@@ -365,18 +436,21 @@ class Engine(
         val app = allocatePorts(initial)
         val dir = appDir(app.name)
         Files.createDirectories(dir)
+        prepareGatewayFiles(app, dir)
+        // Before the routes are rendered, so none of them reaches a container about to have a stale env.
+        updatePendingAuthorizers(app, dir, secrets)
 
         val fragments = mutableListOf<String>()
         val volumes = linkedSetOf<String>()
         for (state in app.services) {
             val def = catalog.resolve(state.id)
-            val context = context(app, state)
+            val context = context(app, state, forRender = true)
             val serviceDir = Path.of(context.getValue("svc_dir"))
             Resources.copyTree(Resources.directory("catalog").resolve(def.id), serviceDir)
             def.dirs.forEach { Files.createDirectories(dir.resolve(it)) }
             val rendered =
                 def.files.map { (output, template) ->
-                    renderTemplate(serviceDir.resolve(template), context).also { Files.writeString(dir.resolve(output), it) }
+                    renderTemplate(serviceDir.resolve(template), context).also { writeServiceFile(dir.resolve(output), it) }
                 }
             val fragment =
                 withConfigHash(
@@ -391,6 +465,9 @@ class Engine(
         writeAtomically(appFile(app.name), json.encodeToString(App.serializer(), app) + "\n")
         Files.writeString(dir.resolve("compose.yml"), composeFile(app.name, fragments, volumes))
         Files.writeString(dir.resolve("${app.name}.env"), "# Generated by `gantry env ${app.name}`\n${envText(app)}")
+        writeGatewaySecrets(app, dir, secrets)
+        writeAppliedGatewayConfig(app, dir)
+        writeAuthorizerEnvFiles(app, dir, secrets)
         return app
     }
 
@@ -486,6 +563,25 @@ class Engine(
         fun defaultHome(): Path =
             System.getenv("GANTRY_HOME")?.let { Path.of(it) }
                 ?: Path.of(System.getProperty("user.home"), ".gantry")
+    }
+}
+
+/**
+ * Writes a service's rendered file in place (a container may mount the file itself, so it keeps its inode), and only
+ * when [text] differs. A change always moves the modification time on to a later whole second: APISIX re-reads its
+ * `apisix.yaml` only when that changes, so a second change written in a second it already read would never apply.
+ */
+internal fun writeServiceFile(
+    file: Path,
+    text: String,
+) {
+    val before = if (Files.exists(file)) Files.getLastModifiedTime(file) else null
+    if (before != null && Files.readString(file) == text) return
+    Files.writeString(file, text)
+    if (before == null) return
+    val previous = before.to(TimeUnit.SECONDS)
+    if (Files.getLastModifiedTime(file).to(TimeUnit.SECONDS) <= previous) {
+        Files.setLastModifiedTime(file, FileTime.from(previous + 1, TimeUnit.SECONDS))
     }
 }
 

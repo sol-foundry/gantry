@@ -1,5 +1,7 @@
 package dev.gantry.engine
 
+import dev.gantry.gateway.authorizerEnvFiles
+import dev.gantry.gateway.authorizersStartedWith
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -7,11 +9,15 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.IOException
 import java.nio.file.Files
+import java.nio.file.Path
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 
 /** Why Docker did or didn't answer: decides what to tell the developer. */
 enum class DockerState { RUNNING, NOT_FOUND, NOT_ANSWERING, DOWN }
+
+/** What [Docker.execWithInput] did: ran it, found no running container, or could not run it in one that is. */
+enum class ExecResult { DONE, NOT_RUNNING, FAILED }
 
 /** Container lifecycle for apps, by driving `docker compose` against each app's generated compose file. */
 class Docker(
@@ -53,6 +59,9 @@ class Docker(
 
     /** How long [probe] and [liveStates] wait for docker: a hung daemon must not hang an agent's tool call. */
     var queryTimeout: Duration = Duration.ofSeconds(10)
+
+    /** How long [execWithInput] lets a command in a container run, stdin included. */
+    var execTimeout: Duration = Duration.ofSeconds(30)
 
     /** Whether the Docker daemon answers, and if not, why. */
     fun probe(): DockerState =
@@ -103,6 +112,9 @@ class Docker(
     /** False when the volume is absent or Docker cannot be asked (not installed, daemon down). */
     fun volumeExists(name: String): Boolean = runCatching { run(listOf("volume", "inspect", name)) }.isSuccess
 
+    /** False when the image is absent or Docker cannot be asked (not installed, daemon down). */
+    fun imageExists(name: String): Boolean = runCatching { run(listOf("image", "inspect", name)) }.isSuccess
+
     fun up(
         app: String,
         stream: Boolean = false,
@@ -110,8 +122,11 @@ class Docker(
         // Re-render first so catalog changes from a newer gantry reach apps created by an older one.
         val current = engine.refresh(app)
         if (current.services.isEmpty()) throw GantryException("no services; add some first")
+        val authorizerEnvs = engine.authorizerEnvFiles(app)
         // --remove-orphans stops services removed from the app; their ports are already back in the pool.
         compose(app, "up", "-d", "--wait", "--build", "--remove-orphans", stream = stream)
+        // `up` recreated every authorizer whose env file changed, so pending ones get their routes back.
+        if (engine.authorizersStartedWith(app, authorizerEnvs)) engine.refresh(app)
         // One-shot helpers sit behind a compose profile: `up --wait` treats any exited container as a failure.
         current.services.flatMap { engine.catalog.resolve(it.id).postUp }.forEach {
             runCatching { compose(app, "--profile", INIT_PROFILE, "up", "--force-recreate", it, stream = stream) }
@@ -125,6 +140,50 @@ class Docker(
     ) {
         engine.refresh(app)
         compose(app, "up", "-d", "--wait", engine.catalog.resolve(service).id)
+    }
+
+    /**
+     * Pipes [input] into [command] inside [container], e.g. to rewrite a file it holds open: a write made through a
+     * bind mount from the host side (virtiofs) leaves the container's append offset stale. [ExecResult.NOT_RUNNING]
+     * when the container is absent or stopped, so nothing in it can be writing.
+     */
+    fun execWithInput(
+        container: String,
+        command: List<String>,
+        input: ByteArray,
+    ): ExecResult {
+        when (val state = query(listOf("inspect", "--type", "container", "-f", "{{.State.Running}}", container))) {
+            is Query.Ok -> if (state.output.trim() != "true") return ExecResult.NOT_RUNNING
+            // Only a missing container means nothing writes; a daemon or permission error must not look like one.
+            is Query.Failed -> return if ("no such" in state.output.lowercase()) ExecResult.NOT_RUNNING else ExecResult.FAILED
+            Query.NotFound -> return ExecResult.NOT_RUNNING
+            Query.TimedOut -> return ExecResult.FAILED
+        }
+        val process =
+            try {
+                ProcessBuilder(listOf(engine.dockerCommand, "exec", "-i", container) + command)
+                    .redirectErrorStream(true)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .start()
+            } catch (_: IOException) {
+                return ExecResult.FAILED
+            }
+        // Fed from its own thread: a stalled exec stops reading stdin, and the timeout must still fire.
+        val feeder =
+            Thread {
+                runCatching { process.outputStream.use { it.write(input) } }
+            }.apply {
+                isDaemon = true
+                start()
+            }
+        val finished = process.waitFor(execTimeout.toMillis(), TimeUnit.MILLISECONDS)
+        if (!finished) {
+            // Children first: destroying closes stdin, which blocks while any of them still holds the pipe.
+            process.descendants().forEach { it.destroyForcibly() }
+            process.destroyForcibly()
+        }
+        feeder.join(TimeUnit.SECONDS.toMillis(1))
+        return if (finished && process.exitValue() == 0) ExecResult.DONE else ExecResult.FAILED
     }
 
     /** Best effort: a missing container, or no Docker at all, is not an error. */
@@ -149,8 +208,35 @@ class Docker(
         args: List<String>,
         env: Map<String, String> = emptyMap(),
         onLine: (String) -> Unit,
+    ): Int = streamLines(listOf("run", "--rm") + args, env, onLine)
+
+    /** `docker build -t [tag] [dir]`, streaming output lines to [onLine]; returns the exit code. */
+    fun buildImage(
+        tag: String,
+        dir: Path,
+        onLine: (String) -> Unit,
+    ): Int = streamLines(listOf("build", "-t", tag, dir.toAbsolutePath().toString()), emptyMap(), onLine)
+
+    /** Runs docker compose for [app], streaming output lines to [onLine]; returns the exit code. */
+    fun composeLines(
+        app: String,
+        args: List<String>,
+        onLine: (String) -> Unit,
     ): Int {
-        val builder = ProcessBuilder(listOf(engine.dockerCommand, "run", "--rm") + args).redirectErrorStream(true)
+        engine.loadApp(app)
+        return streamLines(composeArgs(app) + args, emptyMap(), onLine)
+    }
+
+    /**
+     * Runs docker with [args], streaming merged output lines to [onLine]; returns the exit code. If [onLine] throws,
+     * the process is stopped and the exception rethrown once it has exited.
+     */
+    private fun streamLines(
+        args: List<String>,
+        env: Map<String, String>,
+        onLine: (String) -> Unit,
+    ): Int {
+        val builder = ProcessBuilder(listOf(engine.dockerCommand) + args).redirectErrorStream(true)
         builder.environment().putAll(env)
         val process =
             try {
@@ -167,7 +253,7 @@ class Docker(
                             try {
                                 onLine(line)
                             } catch (e: Throwable) {
-                                // Stop the container rather than let it run on unobserved; keep draining so it can exit.
+                                // Stop the process rather than let it run on unobserved; keep draining so it can exit.
                                 failure = e
                                 process.destroy()
                             }

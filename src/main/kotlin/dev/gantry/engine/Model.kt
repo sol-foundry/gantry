@@ -1,5 +1,6 @@
 package dev.gantry.engine
 
+import dev.gantry.gateway.PushedAuthorizer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -95,13 +96,14 @@ data class SourceSettings(
 
 /**
  * One container group. [envNames] maps a service's default env key to the name the application reads;
- * an empty name omits the variable.
+ * an empty name omits the variable. [authorizers] are the custom authorizers pushed for the app's gateway.
  */
 @Serializable
 data class App(
     val name: String,
     val services: List<ServiceState> = emptyList(),
     val envNames: Map<String, String> = emptyMap(),
+    val authorizers: List<PushedAuthorizer> = emptyList(),
 ) {
     fun service(id: String): ServiceState? = services.firstOrNull { it.id == id }
 }

@@ -1,0 +1,29 @@
+{
+  "id": "gateway",
+  "description": "REST API gateway (Apache APISIX) in front of your app, with gantry-auth verifying logins (Firebase, Cognito, Supabase, JWT or a custom authorizer). Configure routes and auth in the app's gateway.yml; with none it is a transparent proxy to `upstream`.",
+  "options": {
+    "version": "3.19.0-debian",
+    "upstream": "http://localhost:8080"
+  },
+  "option_meta": {
+    "upstream": {
+      "help": "Where requests go when gateway.yml names no upstream: your app's base URL, without a path. localhost is reached through the Docker host."
+    }
+  },
+  "ports": {
+    "main": 8090
+  },
+  "dirs": [
+    "gateway-log"
+  ],
+  "files": {
+    "config.yaml": "config.yaml.tmpl",
+    "apisix.yaml": "apisix.yaml.tmpl"
+  },
+  "env": {
+    "GATEWAY_URL": "http://localhost:{{port.main}}"
+  },
+  "ui": {
+    "builtin": "gateway"
+  }
+}

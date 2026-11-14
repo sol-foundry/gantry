@@ -1,5 +1,8 @@
 package dev.gantry.engine
 
+import dev.gantry.gateway.apisixConfigBlock
+import dev.gantry.gateway.apisixRoutesBlock
+import dev.gantry.gateway.authorizerServicesBlock
 import java.net.URLEncoder
 
 /** Placeholder values available while rendering a service's files: `app`, `opt.x`, `port.x`, ... */
@@ -20,6 +23,9 @@ object Template {
             "valkey_persistence_args" to ::valkeyPersistenceArgs,
             "valkey_data_mount" to ::valkeyDataMount,
             "kafka_create_topics" to ::kafkaCreateTopics,
+            "apisix_config" to ::apisixConfigBlock,
+            "apisix_routes" to ::apisixRoutesBlock,
+            "authorizer_services" to ::authorizerServicesBlock,
         )
 
     /**

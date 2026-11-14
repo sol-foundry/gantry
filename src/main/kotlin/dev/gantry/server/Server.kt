@@ -11,6 +11,15 @@ import dev.gantry.engine.Engine
 import dev.gantry.engine.EnvEntry
 import dev.gantry.engine.GantryException
 import dev.gantry.engine.Presets
+import dev.gantry.gateway.Authorizers
+import dev.gantry.gateway.GATEWAY
+import dev.gantry.gateway.callLog
+import dev.gantry.gateway.configText
+import dev.gantry.gateway.formYaml
+import dev.gantry.gateway.gatewayYmlHasComments
+import dev.gantry.gateway.parseGatewayConfig
+import dev.gantry.gateway.saveGatewayConfig
+import dev.gantry.share.Importer
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.defaultForFilePath
@@ -25,6 +34,7 @@ import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.host
 import io.ktor.server.request.receive
+import io.ktor.server.request.receiveText
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
@@ -54,6 +64,7 @@ private val localHosts = setOf("localhost", "127.0.0.1", "[::1]", "::1")
 private const val DEFAULT_LOG_TAIL = 200
 private const val MAX_LOG_TAIL = 2000
 private const val PAGE_LIMIT_DEFAULT = 100
+private const val MAX_GATEWAY_CALLS = 1000
 
 /** Starts the dashboard on 127.0.0.1:[port] and blocks. */
 fun startDashboard(
@@ -67,6 +78,8 @@ fun startDashboard(
 fun Application.dashboardModule(
     engine: Engine,
     sync: Sync = Sync(engine),
+    authorizers: Authorizers = Authorizers(engine),
+    importer: Importer = Importer(engine),
 ) {
     install(ContentNegotiation) { json(apiJson) }
     install(StatusPages) {
@@ -79,9 +92,9 @@ fun Application.dashboardModule(
     routing {
         route("/api") {
             val migrations = Migrations(engine)
-            apiRoutes(engine, migrations, QueueExplorer(engine))
+            apiRoutes(engine, migrations, QueueExplorer(engine), authorizers)
             databaseRoutes(DatabaseExplorer(engine, migrations), migrations)
-            shareRoutes(engine, sync)
+            shareRoutes(engine, sync, importer)
         }
         // Unknown API paths are a client bug, not a page: answer 404 rather than the SPA's index.html.
         route("/api/{path...}") { handle { call.respond(HttpStatusCode.NotFound, ErrorBody("no such endpoint")) } }
@@ -116,6 +129,7 @@ private fun Route.apiRoutes(
     engine: Engine,
     migrations: Migrations,
     queues: QueueExplorer,
+    authorizers: Authorizers,
 ) {
     get("/catalog") {
         val services =
@@ -197,6 +211,61 @@ private fun Route.apiRoutes(
                     ?.toIntOrNull()
                     ?.takeIf { it in 1..MAX_LOG_TAIL } ?: DEFAULT_LOG_TAIL
             call.respond(LogsResponse(blocking { engine.docker.logs(app(), call.parameters.getOrFail("service"), tail) }))
+        }
+
+        route("/gateway") {
+            get("/calls") {
+                val app = gatewayApp(engine) ?: return@get
+                val q = call.request.queryParameters
+                val limit = q["limit"]?.toIntOrNull()?.coerceIn(1, MAX_GATEWAY_CALLS) ?: PAGE_LIMIT_DEFAULT
+                call.respond(blocking { engine.callLog(app).recent(limit, q["status"]?.ifBlank { null }, q["path"]?.ifBlank { null }) })
+            }
+            delete("/calls") {
+                val app = gatewayApp(engine) ?: return@delete
+                blocking { engine.callLog(app).clear() }
+                call.respond(Ok())
+            }
+            get("/calls/{id}") {
+                val app = gatewayApp(engine) ?: return@get
+                val found = blocking { engine.callLog(app).get(call.parameters.getOrFail("id")) }
+                if (found == null) call.respond(HttpStatusCode.NotFound, ErrorBody("no such call")) else call.respond(found)
+            }
+            get("/config") {
+                val app = gatewayApp(engine) ?: return@get
+                call.respond(GatewayConfigText(blocking { configText(engine.appDir(app)) }))
+            }
+            put("/config") {
+                val app = gatewayApp(engine) ?: return@put
+                saveGatewayYml(engine, authorizers, app, call.receive<GatewayConfigText>().text)
+            }
+            // The form editor's view of the same file: the parsed model, and whether saving it would drop comments.
+            get("/config/form") {
+                val app = gatewayApp(engine) ?: return@get
+                val text = blocking { configText(engine.appDir(app)) }
+                val form = GatewayConfigForm(parseGatewayConfig(text), gatewayYmlHasComments(text))
+                call.respondText(formJson.encodeToString(GatewayConfigForm.serializer(), form), ContentType.Application.Json)
+            }
+            put("/config/form") {
+                val app = gatewayApp(engine) ?: return@put
+                val form =
+                    try {
+                        formJson.decodeFromString(GatewayConfigForm.serializer(), call.receiveText())
+                    } catch (e: SerializationException) {
+                        val problem = e.message?.lineSequence()?.first() ?: "not a gateway config"
+                        call.respond(HttpStatusCode.BadRequest, ConfigProblems("gateway.yml has problems", listOf(problem)))
+                        return@put
+                    }
+                val yml = formYaml(form.config)
+                if (yml.text == null) {
+                    call.respond(HttpStatusCode.BadRequest, ConfigProblems("gateway.yml has problems", yml.problems))
+                    return@put
+                }
+                saveGatewayYml(engine, authorizers, app, yml.text)
+            }
+            get("/authorizers") {
+                val app = gatewayApp(engine) ?: return@get
+                call.respond(blocking { engine.loadApp(app).authorizers })
+            }
         }
 
         get("/queue/queues") { call.respond(blocking { queues.queues(app()) }) }
@@ -309,6 +378,36 @@ private fun applyIfRunning(
 }
 
 private fun RoutingContext.app(): String = call.parameters.getOrFail("app")
+
+/** Every field both ways, and a key the model does not have is an error rather than silently dropped. */
+private val formJson = Json { encodeDefaults = true }
+
+/**
+ * Saves [text] as the app's `gateway.yml` and answers: problems are a 400 and nothing is written. Like
+ * `gantry gateway config --file`, running authorizers start again with their new env.
+ */
+private suspend fun RoutingContext.saveGatewayYml(
+    engine: Engine,
+    authorizers: Authorizers,
+    app: String,
+    text: String,
+) {
+    val problems = blocking { engine.saveGatewayConfig(app, text) }
+    if (problems.isEmpty()) {
+        blocking { authorizers.recreatePending(app) {} }
+        call.respond(Ok())
+    } else {
+        call.respond(HttpStatusCode.BadRequest, ConfigProblems("gateway.yml has problems", problems))
+    }
+}
+
+/** The app of a gateway route, or null after answering 404 because it has no gateway service. */
+private suspend fun RoutingContext.gatewayApp(engine: Engine): String? {
+    val app = app()
+    if (blocking { engine.loadApp(app).service(GATEWAY) } != null) return app
+    call.respond(HttpStatusCode.NotFound, ErrorBody("'$app' has no gateway (run `gantry add $app gateway`)"))
+    return null
+}
 
 private fun RoutingContext.service(): String = call.parameters.getOrFail("service")
 

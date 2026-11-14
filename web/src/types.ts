@@ -35,7 +35,7 @@ export interface AppSummary {
 
 export type UILink =
   | { kind: "external"; url: string; note?: string }
-  | { kind: "builtin"; name: "postgres" | "mysql" | "queue" }
+  | { kind: "builtin"; name: "postgres" | "mysql" | "queue" | "gateway" }
   | { kind: "hint"; note: string };
 
 export interface ServiceStatus {
@@ -272,6 +272,22 @@ export interface ImportRequest {
   app: string;
   services: Record<string, ImportedService>;
   envNames: Record<string, string>;
+  /** The file's gateway section, sent back as it came. */
+  gateway?: ExportedGateway | null;
+}
+
+export interface ExportedGateway {
+  config: string;
+  authorizers?: { name: string; dir: { repo?: string | null; path: string }; port?: number }[];
+}
+
+export interface ImportApplied {
+  ok: boolean;
+  app: string;
+  /** Authorizer name to the directory to push it from; images are built per machine. */
+  toPush?: Record<string, string>;
+  /** Secrets gateway.yml refers to that are not set for the app. */
+  unsetSecrets?: string[];
 }
 
 export interface ImportPreview {
@@ -301,10 +317,150 @@ export interface SyncJob {
   flywayVersion?: string | null;
   /** The local database is half-copied, by this sync or an earlier one. */
   incomplete?: boolean;
+  /** The tables this sync copies; empty for a whole-database sync. */
+  scope?: string[];
 }
 
 export interface SourceInfo {
   source: SourceSettings | null;
   passwordSaved: boolean;
   job: SyncJob | null;
+}
+
+/** One call through the gateway, headers and bodies already redacted by the server. */
+export interface GatewayCall {
+  id: string;
+  time: string;
+  method: string;
+  uri: string;
+  upstreamUri: string | null;
+  status: number;
+  latencyMs: number;
+  route: string | null;
+  userId: string | null;
+  authDecision: string | null;
+  authReason: string | null;
+  requestHeaders: Record<string, string>;
+  requestBody: string | null;
+  responseHeaders: Record<string, string>;
+  responseBody: string | null;
+  /** A body was cut at the configured size. */
+  truncated: boolean;
+}
+
+export interface PushedAuthorizer {
+  name: string;
+  dir: string;
+  port: number;
+  image: string;
+}
+
+/** gateway.yml as structured data; mirrors the server's GatewayConfig field for field. Unset optional values are null. */
+export interface GatewayConfig {
+  /** Overrides the service's `upstream` option. */
+  upstream: string | null;
+  /** Headers for every route and the default action; a route's own headers add to them or replace one by name. */
+  headers: Record<string, string>;
+  authorizers: Record<string, GatewayAuthorizer>;
+  steps: Record<string, GatewayStep>;
+  /** First match wins. */
+  routes: GatewayRoute[];
+  default: GatewayRouteAction;
+  cors: GatewayCors | null;
+  stripHeaders: string[];
+  log: GatewayLogSettings;
+}
+
+/** How a caller proves who they are; `type` is firebase, cognito, supabase, jwt or custom. */
+export interface GatewayAuthorizer {
+  type: string;
+  projectId: string | null;
+  region: string | null;
+  userPoolId: string | null;
+  clientIds: string[];
+  tokenUse: string;
+  url: string | null;
+  jwtSecret: string | null;
+  jwksUrl: string | null;
+  /** An inline key set; its scalars are strings. */
+  jwks: Record<string, unknown> | null;
+  issuer: string | null;
+  audiences: string[];
+  algorithms: string[];
+  container: string | null;
+  env: Record<string, string>;
+  /** `header:<name>` or `query:<name>`. */
+  tokenFrom: string;
+  /** `deny` or `continue:<errorCode>`. */
+  onUnverifiedEmail: string;
+  denyStatus: number;
+  missingTokenStatus: number | null;
+}
+
+export interface GatewayStep {
+  type: string;
+  lookup: GatewayHttpCall;
+  create: GatewayHttpCall | null;
+  /** Context name to a `$.json.path` in the response. */
+  map: Record<string, string>;
+  cacheSeconds: number;
+  /** `deny` or `continue:<errorCode>`. */
+  onFailure: string;
+}
+
+export interface GatewayHttpCall {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: Record<string, string> | null;
+}
+
+export interface GatewayRoute {
+  name: string;
+  match: GatewayMatch;
+  /** `public`, `deny` or an authorizer name. */
+  auth: string;
+  steps: string[];
+  rewrite: GatewayRewrite | null;
+  upstream: string | null;
+  headers: Record<string, string>;
+}
+
+export interface GatewayMatch {
+  host: string;
+  path: string;
+  methods: string[];
+}
+
+export interface GatewayRewrite {
+  addPrefix: string | null;
+  stripPrefix: string | null;
+  replace: string | null;
+}
+
+export interface GatewayRouteAction {
+  auth: string;
+  steps: string[];
+  headers: Record<string, string>;
+  upstream: string | null;
+}
+
+export interface GatewayCors {
+  origins: string[];
+  credentials: boolean;
+  allowHeaders: string[];
+  exposeHeaders: string[];
+  maxAge: number;
+}
+
+export interface GatewayLogSettings {
+  maxCalls: number;
+  maxBodyBytes: number;
+  redact: string[];
+}
+
+/** GET .../gateway/config/form: the config, and whether gateway.yml has comments a form save would drop. */
+export interface GatewayConfigForm {
+  config: GatewayConfig;
+  comments: boolean;
 }

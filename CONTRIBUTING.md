@@ -91,8 +91,11 @@ src/main/kotlin/dev/gantry/
   db/         SQL dialects (Postgres, MySQL), database explorer, Flyway migrations
   server/     dashboard JSON API (Ktor), queue explorer
   mcp/        agent access: stdio MCP server, connection details, per-agent config
+  gateway/    REST API gateway: gateway.yml model, APISIX renderer, call log, custom authorizers
+  auth/       gantry-auth, the gateway's token verifier (runs in a container)
 src/main/resources/
   catalog/    one directory per service (service.json + services.yml)
+  authorizer-templates/   starting points for `gantry authorizer init` (node, python, go)
   presets/    named service bundles
 web/          React dashboard (Vite, TypeScript, Tailwind, shadcn/ui), bundled into the jar
 ```
@@ -132,6 +135,34 @@ the real `docker` would delete a developer's real `shop` app.
 A new SQL database also needs a `Dialect` in `db/Dialect.kt` (quoting, catalog queries, DDL differences) and its
 JDBC driver and Flyway database module in `build.gradle.kts`; the explorer, row editing and migrations then work
 unchanged. It must expose `name`, `user`, `password` and `migrations` options and a `main` port.
+
+## REST API gateway
+
+The `gateway` service is a catalog entry like any other, plus two parts the catalog can't express:
+
+- **The renderer** (`gateway/`). `gateway.yml` is parsed and validated by `GatewayConfig.kt`; `ApisixRenderer.kt`
+  turns it into APISIX's standalone `apisix.yaml` through the `{{@apisix_routes}}` computed block, and
+  `{{@authorizer_services}}` adds one compose service per pushed authorizer. The engine also writes the owner-only
+  `gateway-secrets.json` and `auth-<name>.env` files after each render. `apisix.yaml` is rewritten in place (APISIX
+  watches the bind-mounted file) and must end with `#END`.
+- **gantry-auth** (`auth/`), which APISIX asks through `forward-auth` whether a request may pass. It is not an
+  image of its own: it runs `dev.gantry.auth.AuthServerKt` in a stock JRE container from a copy of Gantry's jars,
+  staged under `~/.gantry/runtime` (`GatewayRuntime`), so the gateway only works from an installed build
+  (`./gradlew installDist`). It reloads `gateway.yml` and the secrets file when they change.
+
+Custom authorizers are scaffolded from `src/main/resources/authorizer-templates/<lang>/`; a template's README is
+its contract, and `AuthorizersTest` checks each template mentions it.
+
+The tests use fixtures and fakes and never start containers. The end-to-end test, which runs a real gateway in
+Docker, is opt-in:
+
+```bash
+GANTRY_E2E=1 ./gradlew test -PskipWeb --tests 'dev.gantry.gateway.GatewayEndToEndTest'   # needs Docker
+```
+
+With `GANTRY_E2E=1` the test task runs `installDist` first, since gantry-auth runs from the installed jars. The test
+makes a throwaway app under `build/gateway-e2e/` on free ports, with a small Python upstream next to it, and removes
+the app, its containers and network and the authorizer image it built when it finishes. It takes about a minute.
 
 ## Dashboard UI
 

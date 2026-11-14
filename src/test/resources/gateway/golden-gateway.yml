@@ -1,0 +1,61 @@
+upstream: http://localhost:8080
+cors:
+  origins: [http://localhost:3000]
+  credentials: true
+  exposeHeaders: [x-request-id]
+stripHeaders: [x-user-id, x-gateway-user-email, x-internal-api-key, x-tenant]
+authorizers:
+  fb:
+    type: firebase
+    projectId: demo
+    onUnverifiedEmail: continue:email_not_verified
+  sb:
+    type: supabase
+    url: https://abc.supabase.co
+    jwtSecret: "{{secret:SUPABASE_JWT}}"
+    tokenFrom: query:token
+  ext:
+    type: custom
+    url: http://localhost:9300/check
+steps:
+  user:
+    type: http-lookup
+    lookup:
+      url: "{{upstream}}/internal/users/{{uid}}"
+      headers:
+        x-internal-api-key: "{{secret:INTERNAL_API_KEY}}"
+    map:
+      userId: "$.id"
+    onFailure: continue:user_lookup_failed
+routes:
+  - name: portal
+    match: { path: /portal/**, methods: [get, POST] }
+    auth: fb
+    steps: [user]
+    rewrite: { addPrefix: /app }
+    headers:
+      x-user-id: "{{userId}}"
+      X-Gateway-User-Email: "{{email}}"
+  - name: admin
+    match: { host: admin.example.com, path: /admin/* }
+    auth: sb
+    rewrite: { stripPrefix: /admin }
+    headers:
+      x-internal-api-key: "{{secret:INTERNAL_API_KEY}}"
+  - name: hook
+    match: { path: /hook }
+    auth: ext
+    upstream: http://localhost:9000
+  - name: health
+    match: { path: /actuator/** }
+    headers:
+      x-source: gateway
+      x-user-id: "{{uid}}"
+  - name: blocked
+    match: { path: /private/** }
+    auth: deny
+    rewrite: { replace: /nope }
+default:
+  auth: fb
+  headers:
+    x-user-id: "{{uid}}"
