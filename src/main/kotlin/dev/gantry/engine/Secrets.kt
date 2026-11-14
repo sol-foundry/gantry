@@ -40,6 +40,35 @@ class SecretStore(
         password: String,
     ) = locked { write(read() + ("$app/$service" to password)) }
 
+    /** A secret the app's `gateway.yml` refers to as `{{secret:NAME}}`. */
+    fun secret(
+        app: String,
+        name: String,
+    ): String? = password(app, "$GATEWAY_SECRET$name")
+
+    fun setSecret(
+        app: String,
+        name: String,
+        value: String,
+    ) = setPassword(app, "$GATEWAY_SECRET$name", value)
+
+    /** The names of the app's gateway secrets, sorted; never their values. */
+    fun secretNames(app: String): List<String> {
+        val prefix = "$app/$GATEWAY_SECRET"
+        return locked { read().keys }.filter { it.startsWith(prefix) }.map { it.removePrefix(prefix) }.sorted()
+    }
+
+    /** Drops one gateway secret; false when it was not set. */
+    fun forgetSecret(
+        app: String,
+        name: String,
+    ): Boolean =
+        locked {
+            val all = read()
+            val key = "$app/$GATEWAY_SECRET$name"
+            (key in all).also { if (it) write(all - key) }
+        }
+
     /** Drops one service's password, or every password of the app when [service] is null. */
     fun forget(
         app: String,
@@ -84,6 +113,7 @@ class SecretStore(
     }
 
     private companion object {
+        const val GATEWAY_SECRET = "gateway-secret:"
         val jvmLock = ReentrantLock()
     }
 }

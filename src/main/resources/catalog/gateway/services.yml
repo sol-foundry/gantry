@@ -1,0 +1,49 @@
+  gateway:
+    image: "apache/apisix:{{opt.version}}"
+    container_name: "{{app}}-gateway"
+    environment:
+      # Standalone mode: routes come from apisix.yaml, there is no etcd to initialise.
+      APISIX_STAND_ALONE: "true"
+    ports:
+      - "127.0.0.1:{{port.main}}:9080"
+    volumes:
+      - "{{dir}}/config.yaml:/usr/local/apisix/conf/config.yaml:ro"
+      - "{{dir}}/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro"
+      - "{{dir}}/gateway-log:/gantry-log"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "bash", "-c", ":> /dev/tcp/127.0.0.1/9080"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Verifies callers for routes that need a login; APISIX asks it through forward-auth at http://gantry-auth:9100.
+  gantry-auth:
+    image: "eclipse-temurin:17-jre"
+    container_name: "{{app}}-gantry-auth"
+    command:
+      - java
+      - -cp
+      - "/gantry/lib/*"
+      - dev.gantry.auth.AuthServerKt
+      - "--in-container"
+      - --config
+      - /config/gateway.applied.yml
+      - --secrets
+      - /config/gateway-secrets.json
+      - --log
+      - /gantry-log/auth.log
+      - --app
+      - "{{app}}"
+      - --upstream
+      - "{{opt.upstream}}"
+    volumes:
+      - "{{runtime}}:/gantry:ro"
+      - "{{dir}}:/config:ro"
+      - "{{dir}}/gateway-log:/gantry-log"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+{{@authorizer_services}}

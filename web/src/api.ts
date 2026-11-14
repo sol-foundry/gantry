@@ -6,12 +6,17 @@ import type {
   DdlRequest,
   DdlResult,
   EnvResponse,
+  GatewayCall,
+  GatewayConfig,
+  GatewayConfigForm,
+  ImportApplied,
   ImportPreview,
   ImportRequest,
   ImportValidation,
   MigrationAction,
   MigrationOutcome,
   MigrationStatus,
+  PushedAuthorizer,
   QueueMessage,
   QueueSummary,
   RowsPage,
@@ -74,10 +79,20 @@ export const api = {
   purge: (name: string, queue: string) => post(`${app(name)}/queue/${encodeURIComponent(queue)}/purge`),
   redrive: (name: string, source: string) => post<{ moved: number }>(`${app(name)}/queue/${encodeURIComponent(source)}/redrive`),
 
+  gatewayCalls: (name: string, filter: { status?: string; path?: string; limit?: number }) =>
+    get<GatewayCall[]>(`${app(name)}/gateway/calls?${qs(filter)}`),
+  clearGatewayCalls: (name: string) => request<{ ok: boolean }>("DELETE", `${app(name)}/gateway/calls`),
+  gatewayConfig: (name: string) => get<{ text: string }>(`${app(name)}/gateway/config`),
+  saveGatewayConfig: (name: string, text: string) => request<{ ok: boolean }>("PUT", `${app(name)}/gateway/config`, { text }),
+  gatewayConfigForm: (name: string) => get<GatewayConfigForm>(`${app(name)}/gateway/config/form`),
+  saveGatewayConfigForm: (name: string, config: GatewayConfig) =>
+    request<{ ok: boolean }>("PUT", `${app(name)}/gateway/config/form`, { config }),
+  gatewayAuthorizers: (name: string) => get<PushedAuthorizer[]>(`${app(name)}/gateway/authorizers`),
+
   exportUrl: (name: string) => `/api${app(name)}/export`,
   importPreview: (file: unknown, as?: string) => post<ImportPreview>("/import/preview", { file, as: as || undefined }),
   importValidate: (req: ImportRequest) => post<ImportValidation>("/import/validate", req),
-  importApply: (req: ImportRequest) => post<{ ok: boolean; app: string }>("/import/apply", req),
+  importApply: (req: ImportRequest) => post<ImportApplied>("/import/apply", req),
 
   db: (name: string, service: SqlService) => dbApi(`${app(name)}/db/${service}`),
 };

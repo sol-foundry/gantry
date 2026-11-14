@@ -39,10 +39,13 @@ private data class ImportValidation(
     val exists: Boolean,
 )
 
+/** [toPush] (authorizer to the directory to push it from) and [unsetSecrets] are what the gateway section left to do. */
 @Serializable
 private data class ImportApplied(
     val ok: Boolean,
     val app: String,
+    val toPush: Map<String, String> = emptyMap(),
+    val unsetSecrets: List<String> = emptyList(),
 )
 
 @Serializable
@@ -92,9 +95,8 @@ private suspend fun <T> blocking(work: () -> T): T = withContext(Dispatchers.IO)
 fun Route.shareRoutes(
     engine: Engine,
     sync: Sync,
+    importer: Importer = Importer(engine),
 ) {
-    val importer = Importer(engine)
-
     get("/apps/{app}/export") {
         val app = call.parameters.getOrFail("app")
         val text = blocking { Exporter(engine).export(app).encode() }
@@ -119,8 +121,9 @@ fun Route.shareRoutes(
         }
         post("/apply") {
             val request = call.receive<ImportRequest>()
-            val app = blocking { importer.apply(request) }
-            call.respond(ImportApplied(true, app.name))
+            val imported = blocking { importer.importApp(request) }
+            val gateway = imported.gateway
+            call.respond(ImportApplied(true, imported.app.name, gateway?.toPush.orEmpty(), gateway?.unsetSecrets.orEmpty()))
         }
     }
 

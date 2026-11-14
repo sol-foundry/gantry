@@ -4,6 +4,8 @@ import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
 import dev.gantry.engine.NO_DOCKER
 import dev.gantry.engine.SourceSettings
+import dev.gantry.gateway.PushedAuthorizer
+import dev.gantry.gateway.saveGatewayConfig
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -87,5 +89,49 @@ class ExporterTest {
     @Test
     fun `unknown app fails`() {
         assertFailsWith<GantryException> { Exporter(engine).export("nope") }
+    }
+
+    @Test
+    fun `export includes gateway config and authorizer dirs, never secret values`() {
+        val lib = Files.createTempDirectory("gantry-lib").also { Files.writeString(it.resolve("gantry.jar"), "jar") }
+        val engine = Engine(home = Files.createTempDirectory("gantry-export"), dockerCommand = NO_DOCKER, gatewayLib = lib)
+        engine.create("shop", services = listOf("gateway"))
+        val config = "default:\n  auth: public\n  headers:\n    x-key: \"{{secret:API_KEY}}\"\n"
+        assertEquals(emptyList(), engine.saveGatewayConfig("shop", config))
+        engine.secrets.setSecret("shop", "API_KEY", "super-secret-value")
+        val repo = Files.createDirectories(Files.createTempDirectory("repos").resolve("my-api"))
+        Files.createDirectories(repo.resolve(".git"))
+        val loose = Files.createTempDirectory("loose")
+        engine.setAuthorizers(
+            "shop",
+            listOf(
+                PushedAuthorizer("check", "my-api/auth/check", 9001, "gantry-shop-auth-check:latest"),
+                PushedAuthorizer("solo", loose.toString(), image = "gantry-shop-auth-solo:latest"),
+            ),
+        )
+
+        val file = Exporter(engine).export("shop")
+
+        val gateway = file.gateway!!
+        assertEquals(config, gateway.config)
+        assertEquals(
+            listOf(
+                ExportedAuthorizer("check", ExportedPath("my-api", "auth/check"), 9001),
+                ExportedAuthorizer("solo", ExportedPath(null, loose.toString()), 8080),
+            ),
+            gateway.authorizers,
+        )
+        val text = file.encode()
+        assertFalse("super-secret-value" in text)
+        assertFalse("gantry-shop-auth-check:latest" in text)
+        assertEquals(file, parseExportFile(text))
+    }
+
+    @Test
+    fun `an app without a gateway exports none`() {
+        engine.create("shop", services = listOf("valkey"))
+        val file = Exporter(engine).export("shop")
+        assertNull(file.gateway)
+        assertFalse("\"gateway\"" in file.encode())
     }
 }

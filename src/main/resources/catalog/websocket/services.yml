@@ -1,0 +1,16 @@
+  websocket:
+    image: "node:{{opt.version}}-alpine"
+    container_name: "{{app}}-websocket"
+    command: ["node", "/app/websocket.js"]
+    # node as PID 1 ignores SIGTERM; tini forwards it so `stop` is immediate.
+    init: true
+    ports:
+      - "127.0.0.1:{{port.main}}:8080"
+    volumes:
+      - "{{dir}}/websocket.js:/app/websocket.js:ro"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped

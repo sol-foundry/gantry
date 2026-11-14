@@ -18,6 +18,7 @@ import { ServiceIcon, TOOL_LABELS, serviceLabel } from "@/lib/services";
 import { AppPage } from "@/pages/AppPage";
 import { DatabasePage } from "@/pages/DatabasePage";
 import { NewAppPage } from "@/pages/NewAppPage";
+import { GatewayPage } from "@/pages/GatewayPage";
 import { QueuePage } from "@/pages/QueuePage";
 import { ServicePage } from "@/pages/ServicePage";
 import { ServicesPage } from "@/pages/ServicesPage";
@@ -77,6 +78,7 @@ function Page({ route }: { route: Route }) {
       return <AppPage key={route.app} app={route.app} />;
     case "tool":
       if (route.tool === "queue") return <QueuePage key={route.app} app={route.app} />;
+      if (route.tool === "gateway") return <GatewayPage key={route.app} app={route.app} />;
       return <DatabasePage key={`${route.app}/${route.tool}`} app={route.app} service={route.tool} />;
     case "services":
       return <ServicesPage />;

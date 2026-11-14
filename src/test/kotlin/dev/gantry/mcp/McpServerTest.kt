@@ -13,13 +13,19 @@ import java.io.BufferedReader
 import java.io.StringReader
 import java.io.StringWriter
 import java.nio.file.Files
+import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class McpServerTest {
     private val engine =
-        Engine(home = Files.createTempDirectory("gantry-mcp-test"), dockerCommand = NO_DOCKER).apply {
+        Engine(
+            home = Files.createTempDirectory("gantry-mcp-test"),
+            dockerCommand = NO_DOCKER,
+            gatewayLib = Files.createTempDirectory("gantry-lib").also { it.resolve("gantry-0.0.0.jar").writeText("jar bytes") },
+        ).apply {
             create("shop", services = listOf("postgres"))
         }
 
@@ -174,5 +180,88 @@ class McpServerTest {
         val reply = exchange("""{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"drop_tables"}}""").single()
 
         assertEquals(-32602, reply.at("error", "code").jsonPrimitive.int)
+    }
+
+    private fun gatewayLine(
+        id: String,
+        reqBody: String,
+    ) = """{"request":{"uri":"/a","method":"POST","headers":{"authorization":"Bearer secret","x-request-id":"$id"},"body":"$reqBody"},""" +
+        """"start_time":1793814923986,"latency":2.0,"response":{"status":200,"headers":{}},"route_id":"default"}"""
+
+    private fun callsCall(arguments: String = "{}") =
+        """{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_gateway_calls","arguments":$arguments}}"""
+
+    @Test
+    fun `mcp lists get_gateway_calls only when the app has a gateway`() {
+        fun names(app: String) =
+            exchange("""{"jsonrpc":"2.0","id":3,"method":"tools/list"}""", app = app)
+                .single()
+                .at("result", "tools")
+                .jsonArray
+                .map { it.at("name").jsonPrimitive.content }
+
+        assertEquals(listOf("get_connection_details"), names("shop"))
+
+        engine.create("edge", services = listOf("gateway"))
+        val tools = exchange("""{"jsonrpc":"2.0","id":3,"method":"tools/list"}""", app = "edge").single().at("result", "tools").jsonArray
+        assertEquals(listOf("get_connection_details", "get_gateway_calls"), tools.map { it.at("name").jsonPrimitive.content })
+        assertTrue("4 KB" in tools[1].at("description").jsonPrimitive.content)
+        assertEquals("true", tools[1].at("annotations", "readOnlyHint").jsonPrimitive.content)
+
+        val unknown = exchange(callsCall(), app = "shop").single()
+        assertEquals(-32602, unknown.at("error", "code").jsonPrimitive.int)
+    }
+
+    @Test
+    fun `get_gateway_calls returns redacted calls with bodies cut to 4 KB`() {
+        engine.create("edge", services = listOf("gateway"))
+        val logs = Files.createDirectories(engine.appDir("edge").resolve("gateway-log"))
+        Files.writeString(
+            logs.resolve("calls.log"),
+            listOf(gatewayLine("one", "small"), gatewayLine("two", "z".repeat(10_000))).joinToString("\n", postfix = "\n"),
+        )
+
+        val result = exchange(callsCall("""{"limit":1}"""), app = "edge").single().at("result")
+        val text =
+            result
+                .at("content")
+                .jsonArray[0]
+                .at("text")
+                .jsonPrimitive.content
+        val calls = Json.parseToJsonElement(text).jsonArray
+
+        assertEquals(1, calls.size)
+        assertEquals("two", calls[0].at("id").jsonPrimitive.content)
+        assertEquals(
+            4096,
+            calls[0]
+                .at("requestBody")
+                .jsonPrimitive.content.length,
+        )
+        assertEquals("true", calls[0].at("truncated").jsonPrimitive.content)
+        assertEquals("[redacted]", calls[0].at("requestHeaders", "authorization").jsonPrimitive.content)
+        assertFalse("secret" in text)
+
+        val filtered = exchange(callsCall("""{"status":"5xx"}"""), app = "edge").single().at("result")
+        assertEquals(
+            "[]",
+            filtered
+                .at("content")
+                .jsonArray[0]
+                .at("text")
+                .jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `listing tools does not rewrite saved app state`() {
+        engine.create("edge", services = listOf("gateway"))
+        val state = engine.appDir("edge").resolve("app.json")
+        val withLegacy = Files.readString(state).replaceFirst("\"services\": [", "\"services\": [{\"id\": \"redisinsight\"},")
+        Files.writeString(state, withLegacy)
+
+        exchange("""{"jsonrpc":"2.0","id":3,"method":"tools/list"}""", app = "edge")
+
+        assertEquals(withLegacy, Files.readString(state))
     }
 }

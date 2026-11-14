@@ -14,6 +14,8 @@ Cursor, Codex) look up an app's connection details themselves over MCP.
 - Built-in explorers for databases and queues; RedisInsight, the Temporal UI and Kafka UI come with their services.
 - Postgres and MySQL run [Flyway](https://flywaydb.org) migrations from your service's own folder, and can be
   synced from a source database such as stage.
+- A REST API gateway in front of your app checks logins (Firebase, Cognito, Supabase, JWT or your own code) and logs
+  every call, so you can see exactly what your app was sent.
 
 ## Install
 
@@ -133,6 +135,7 @@ Per service:
 | elasticmq | built-in queue explorer: depth, peek, send, purge (see note below) |
 | temporal | links to the Temporal Web UI |
 | kafka | Kafka UI (kafbat), started with the broker and pre-connected to it; **Open UI** on the app page |
+| gateway | built-in page: live call log, `gateway.yml` form (or YAML) editor, custom authorizers |
 
 The database browser works at two levels:
 
@@ -166,11 +169,18 @@ can run SQL and manage containers.
 | `temporal` | Temporal dev server | `version`, `search_attributes` |
 | `kafka` | Apache Kafka (single KRaft broker), plus Kafka UI | `version`, `topics`, `partitions` |
 | `mysql` | MySQL | `version`, `name`, `user`, `password`, `root_password` (generated), `migrations`, `migrate_on_up` |
+| `gateway` | REST API gateway (Apache APISIX) with login checks; see [REST API gateway](#rest-api-gateway) | `version`, `upstream` |
+| `websocket` | WebSocket gateway: a pub/sub relay standing in for an AWS API Gateway WebSocket API | `version` (Node) |
 
 `gantry services` prints the same list with defaults.
 
 - `queues` — `name[:visibilitySecs[:dlqName]],...`; each queue gets a dead-letter queue (default `<name>-dlq`).
 - `search_attributes` — `Name=Type,...` registered on the Temporal dev server.
+- `websocket` — browsers connect to `WEBSOCKET_WS_URL` (`/ws`) and send `{"action": "subscribe", "topic": "..."}`
+  (or `unsubscribe`, or `topics: [...]`); the app POSTs `{"topic", "eventType", "payload"}` to `WEBSOCKET_URL/publish`
+  and every subscriber of the topic receives it. `POST /subscribe` / `/unsubscribe` register topics for every open
+  connection, since locally there are no connection ids. Nothing persists across restarts. Behind the `gateway`,
+  route `/ws` and the HTTP paths to it as `auth: public`.
 - `topics` — `name[:partitions],...` created on every `start` (existing topics are left alone). Other topics are
   auto-created on first use with `partitions` partitions (default 1). Host clients connect to
   `KAFKA_BOOTSTRAP_SERVERS`; other containers in the app use `kafka:19092`.
@@ -233,6 +243,7 @@ Only services the app has contribute keys:
 | elasticmq | `AWS_ENDPOINT_URL_SQS` |
 | temporal | `TEMPORAL_ADDRESS TEMPORAL_NAMESPACE` |
 | kafka | `KAFKA_BOOTSTRAP_SERVERS` |
+| gateway | `GATEWAY_URL` |
 
 Credentials are local-only defaults. Services bind to `127.0.0.1`.
 
@@ -320,6 +331,231 @@ sync runs, the button shows a spinner and reopens the progress.
 - A source with a newer major version than the local database is refused, with a hint to raise the local
   `version` option.
 
+## REST API gateway
+
+Put a REST API gateway in front of your app, so it gets the same login checks and identity headers locally as it does
+behind your production gateway. The `gateway` service runs [Apache APISIX](https://apisix.apache.org) plus
+gantry-auth, which verifies Firebase, Cognito, Supabase and other JWT logins, or asks an authorizer you write.
+
+```bash
+gantry add my-app --service gateway --set upstream=http://localhost:8080   # your app's base URL, no path
+gantry start my-app
+curl localhost:8090/health                                                 # GATEWAY_URL, proxied to the upstream
+```
+
+Out of the box the gateway is a **transparent proxy**: every request goes to `upstream` and nobody is asked to log
+in. `localhost` in any URL means your machine (it is reached through the Docker host). gantry-auth runs from
+Gantry's own jars, so use an installed Gantry (the script, Homebrew, or `./gradlew installDist`).
+
+### gateway.yml
+
+Routes and auth live in the app's `gateway.yml` (`~/.gantry/apps/<app>/gateway.yml`, written with a commented
+example when the gateway is added). A running gateway picks up a saved change without a restart.
+
+```bash
+gantry gateway config my-app                        # print it
+gantry gateway config my-app --file gateway.yml     # check a file and save it; problems are listed and nothing is saved
+gantry gateway reload my-app                        # after editing ~/.gantry/apps/my-app/gateway.yml by hand: check it and apply it
+```
+
+A hand edit of the file takes effect only once it is applied, with `gantry gateway reload` (or `config --file`):
+until then the gateway keeps running the config it last applied, and a file with problems is never applied.
+
+In the dashboard, the **REST API Gateway** page's **Config** tab shows the same file as a form: routes, logins, user
+lookups and headers as plain fields, with a filter for long route lists. **Edit as YAML** opens the text instead.
+Saving from the form rewrites the file, so its comments are dropped. An example using most of it:
+
+```yaml
+upstream: http://localhost:8080          # optional; overrides the service's `upstream` option
+
+authorizers:
+  fb:
+    type: firebase
+    projectId: my-firebase-project
+    onUnverifiedEmail: continue:email_not_verified
+
+steps:
+  user:
+    type: http-lookup
+    lookup:
+      url: "{{upstream}}/internal/users/by-uid/{{uid}}"
+      headers:
+        x-internal-api-key: "{{secret:INTERNAL_API_KEY}}"
+    create:                              # called when the lookup answers 404
+      method: POST
+      url: "{{upstream}}/internal/users"
+      headers:
+        x-internal-api-key: "{{secret:INTERNAL_API_KEY}}"
+      body:
+        uid: "{{uid}}"
+        email: "{{email}}"
+    map:
+      userId: "$.id"                     # a JSON path in the response
+    cacheSeconds: 300
+    onFailure: continue:user_lookup_failed
+
+routes:                                  # the first match wins
+  - name: portal
+    match:
+      path: /portal/**                   # * is one path segment, ** anything; /portal/** also matches /portal
+      methods: [GET, POST]               # optional, as is host
+    auth: fb
+    steps: [user]
+    rewrite:
+      stripPrefix: /portal               # or addPrefix: /api, or replace: /fixed/path
+    headers:                             # set on the request your app receives
+      x-user-id: "{{userId}}"
+      x-gateway-user-email: "{{email}}"
+      x-error-code: "{{errorCode}}"
+  - name: health
+    match:
+      path: /actuator/**
+    auth: public
+  - name: admin
+    match:
+      path: /admin/**
+    auth: deny
+
+default:                                 # requests no route matches
+  auth: public
+
+cors:
+  origins: [http://localhost:3000]
+  credentials: true                      # needs origins listed explicitly, never *
+  allowHeaders: [authorization, content-type]
+  exposeHeaders: [x-request-id]
+  maxAge: 600
+
+log:
+  maxCalls: 1000                         # calls kept in the call log
+  maxBodyBytes: 65536                    # bodies are cut here when shown
+  redact: [authorization, cookie, set-cookie, x-internal-api-key]
+```
+
+- **Routes.** A route `name` uses letters, digits, `.`, `_` and `-` (at most 64); `path` starts with `/`; `host` is a
+  host name, optionally starting with `*.`. `auth` is `public`, `deny`, or the name of an authorizer. `upstream` on a route sends it elsewhere;
+  `default` takes `auth`, `steps`, `headers` and `upstream` too. Every route streams responses (SSE) unbuffered and
+  passes WebSocket upgrades through; on a protected route the authorizer checks the handshake (browsers can't set
+  headers on one, so use `tokenFrom: query:<name>` there).
+- **Authorizers.** Every type takes `tokenFrom` (`header:Authorization`, the default, or `query:<name>`),
+  `onUnverifiedEmail` (`deny` or `continue:<code>`), `denyStatus` (default 403) and `missingTokenStatus` (both
+  400-599).
+
+  | `type` | Settings |
+  |---|---|
+  | `firebase` | `projectId` |
+  | `cognito` | `region`, `userPoolId`, `clientIds`, `tokenUse` (`id`, the default, or `access`) |
+  | `supabase` | `url` (the project URL; tokens are checked against its JWKS), or add `jwtSecret: "{{secret:NAME}}"` for a legacy HS256 project |
+  | `jwt` | `jwksUrl`, or `jwks` (an inline key set), plus optional `issuer`, `audiences`, `algorithms` (default `[RS256]`) |
+  | `custom` | `container` (an authorizer you pushed, below) or `url`, and `env` for its environment |
+
+- **Templates.** Header values and step settings can use `{{name}}`: any claim of the verified token (`sub`,
+  `email`, `email_verified`, ...), `uid` (the `user_id` claim, else `sub`), the keys a step `map`s, `errorCode`,
+  `{{upstream}}` and `{{secret:NAME}}`. Values put into a step's URL are percent-encoded.
+- **Soft failures.** `continue:<code>` (for `onUnverifiedEmail` and a step's `onFailure`) lets the request through
+  without what failed and sets `{{errorCode}}` to `<code>`, so the app can decide; send it on as a header. This
+  includes a step that can't be reached or times out. `deny` refuses the request: with 403 when the step answers
+  with an error or without a mapped value, and with 503 (`step <name> is unavailable`) when it can't be reached or
+  times out. An authorizer that errors or times out, or a secret that is not set, refuses it with 503 and a message
+  saying why; the gateway never lets a request through by accident.
+- **Headers.** The identity headers are `x-user-id`, `x-gateway-user-email`, `x-gateway-auth-strategy`,
+  `x-internal-api-key` and `x-error-code` (change the list with `stripHeaders`). On a route that needs a login they
+  always pass on, plus every shared or route header, with the values the authorizer gives (gantry-auth fills them
+  from the header templates; an identity header no template sets arrives blank). On a `public` route the shared and
+  route headers are set too, but a templated value arrives blank, since there is no caller to fill it from. Callers
+  can never supply any of these themselves: the gateway removes the client's copies from every request.
+- **Shared headers.** Headers every route sends can be written once, at the top level; a route's (or `default`'s)
+  own `headers` add to them or replace one by name, in any case. They work exactly as if each route listed them:
+
+  ```yaml
+  headers:                               # for every route and the default
+    x-user-id: "{{uid}}"
+    x-gateway-auth-strategy: firebase
+  routes:
+    - name: portal
+      match:
+        path: /portal/**
+      auth: fb
+      headers:
+        x-user-id: "{{userId}}"          # replaces the shared one on this route
+  ```
+
+### Secrets
+
+Values such as API keys are referenced as `{{secret:NAME}}` and never written into `gateway.yml` or an export.
+Set them per app; the value is read from standard input, never the command line:
+
+```bash
+gantry secret set my-app INTERNAL_API_KEY          # prompts without echo
+printf %s "$KEY" | gantry secret set my-app INTERNAL_API_KEY
+gantry secret list my-app                          # names only, and which ones gateway.yml uses but are not set
+gantry secret remove my-app INTERNAL_API_KEY
+```
+
+Secrets are kept in `~/.gantry/secrets.json` (owner-only), next to saved sync passwords. A running gateway picks up a
+new value at once, and a running custom authorizer that uses it is restarted. Its routes go back to it only once it runs
+with the new env: until then (or if the restart fails) they answer 503, and `gantry gateway reload my-app` retries.
+
+### Custom authorizers
+
+When none of the built-in types fits, write the check yourself, in any language that runs in a container:
+
+```bash
+gantry authorizer init check --lang node            # or python, go; writes ./check (--dir PATH to choose)
+gantry authorizer push my-app check ./check         # builds it and runs it next to the gateway; push again after changes
+gantry authorizer list my-app
+gantry authorizer remove my-app check               # stops and forgets it; the image is kept
+```
+
+Then use it in `gateway.yml`:
+
+```yaml
+authorizers:
+  mine:
+    type: custom
+    container: check
+    env:
+      API_KEY: "{{secret:API_KEY}}"      # until it is set, the route answers 503 naming it
+routes:
+  - name: api
+    match:
+      path: /api/**
+    auth: mine
+    headers:
+      x-user-id: ""                      # copied from the authorizer's answer
+```
+
+The contract: for each request on the route, the gateway sends the authorizer a `POST` with the caller's
+`Authorization`, `Cookie`, `X-Request-Id`, `X-Forwarded-Host` and `X-User-Timezone` headers, plus
+`X-Forwarded-Method` and `X-Forwarded-Uri` (the original method, and path with query). The authorizer listens on
+`$PORT` (8080). A **2xx** answer lets the request through, and its identity headers (the `stripHeaders`) plus the
+headers the route, or the top-level `headers`, names are copied onto it. **Anything else** goes back to the caller as it is.
+If the authorizer can't be reached, the request is refused with 503. Each template's README has the details and a
+way to try it on its own.
+
+### Call log
+
+Every call through the gateway is logged with its request and response (headers and bodies) and the auth decision.
+
+- In the dashboard, the **REST API Gateway** page's **Calls** tab lists them live, filters by status and path, and opens
+  each call; **Clear** empties the log. The **Authorizers** tab lists pushed authorizers.
+- `gantry gateway calls my-app [--limit N] [--status 4xx|404] [--path /api/**] [-f]` prints them as a table;
+  `-f` keeps printing new ones. `gantry gateway clear my-app` empties the log; new calls keep being recorded.
+- Coding agents connected with `gantry mcp install` get a second tool, `get_gateway_calls`, with the same filters,
+  so they can see what your app was actually sent and answered.
+
+Headers listed under `log.redact` show as `[redacted]`, and so do, without being listed, headers a route sets from a
+`{{secret:NAME}}` and the query parameter an authorizer reads its token from (`tokenFrom: query:<name>`). Bodies are
+cut at `log.maxBodyBytes`. The files in the app's `gateway-log/` directory keep the full record, and only the newest
+`log.maxCalls` calls are kept. On macOS that directory is yours alone; on Linux the gateway's containers run as other
+users and must write there, so other local users can read the call log files (not list or replace them).
+
+### Sharing
+
+`gantry export` includes `gateway.yml` and where each custom authorizer's code lives (relative to its repository),
+never secret values. `gantry import` writes `gateway.yml`, then lists the secrets to set and the authorizers to
+push on this machine, each with the command to run.
+
 ## Connect coding agents
 
 Let Claude Code, Cursor and Codex find an app's local infrastructure themselves, instead of pasting env values into
@@ -376,6 +612,14 @@ gantry export <app> [-o FILE]
 gantry import <file> [--as NAME] [--set service.option=v ...] [--source service.field=v ...] [--repo NAME=PATH] [-y]
 gantry sync <app> [--service postgres|mysql] [--table T ...] [--source field=v ...] [-y]   replaces local data (or just tables T) with the source's
 gantry destroy <app> [-y]                      deletes data volumes
+gantry gateway calls <app> [--limit N] [--status 4xx|404] [--path GLOB] [-f]
+gantry gateway clear <app>                     empties the call log
+gantry gateway config <app> [--file PATH]      prints gateway.yml, or checks and saves a file
+gantry authorizer init <name> --lang node|python|go [--dir PATH]
+gantry authorizer push <app> <name> <dir>
+gantry authorizer list <app> | remove <app> <name>
+gantry secret set <app> <name>                 value from stdin
+gantry secret list <app> | remove <app> <name>
 gantry mcp install|uninstall <app> [--agent claude|cursor|codex ...] [--dir PATH]
 gantry mcp status [--dir PATH]
 gantry dashboard [--port 7070]

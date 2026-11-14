@@ -6,6 +6,7 @@ import dev.gantry.engine.GantryException
 import dev.gantry.engine.NO_DOCKER
 import dev.gantry.engine.ServiceState
 import dev.gantry.engine.SourceSettings
+import dev.gantry.gateway.PushedAuthorizer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -14,6 +15,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -131,6 +133,16 @@ class ImporterTest {
         val p = preview(file(app = "shop", services = mapOf("postgres" to ExportedService()), envNames = mapOf(key to "PGHOST")))
         assertEquals(mapOf(key to "PGHOST"), p.request.envNames)
         assertEquals(mapOf(key to "PGHOST"), Importer(engine).apply(p.request).envNames)
+    }
+
+    @Test
+    fun `a file exported with the realtime service imports as websocket`() {
+        val p = preview(file(services = mapOf("realtime" to ExportedService()), envNames = mapOf("REALTIME_URL" to "RELAY_URL")))
+        assertEquals(setOf("websocket"), p.request.services.keys)
+        assertEquals(mapOf("WEBSOCKET_URL" to "RELAY_URL"), p.request.envNames)
+        val app = Importer(engine).apply(p.request)
+        assertEquals(listOf("websocket"), app.services.map { it.id })
+        assertEquals(mapOf("WEBSOCKET_URL" to "RELAY_URL"), app.envNames)
     }
 
     @Test
@@ -295,5 +307,153 @@ class ImporterTest {
         assertEquals(pgPorts, replaced.service("postgres")!!.ports)
         assertFalse("shop/valkey/" in ports())
         assertNotEquals(emptyMap(), replaced.service("postgres")!!.ports)
+    }
+
+    private val lib: Path = Files.createTempDirectory("gantry-lib").also { Files.writeString(it.resolve("gantry.jar"), "jar") }
+    private val gatewayEngine = Engine(home = Files.createTempDirectory("gantry-import-gw"), dockerCommand = NO_DOCKER, gatewayLib = lib)
+    private val gatewayYml =
+        """
+        authorizers:
+          mine:
+            type: custom
+            container: check
+            env:
+              API_KEY: "{{secret:API_KEY}}"
+        default:
+          auth: mine
+          headers:
+            x-other: "{{secret:OTHER}}"
+        """.trimIndent() + "\n"
+
+    private fun gatewayFile(
+        config: String = gatewayYml,
+        authorizers: List<ExportedAuthorizer> = emptyList(),
+        services: Map<String, ExportedService> = mapOf("gateway" to ExportedService()),
+    ) = ExportFile(app = "shop", services = services, gateway = ExportedGateway(config, authorizers))
+
+    private fun importGateway(
+        file: ExportFile,
+        images: Set<String> = emptySet(),
+        home: Path = nobody,
+    ): ImportedGateway {
+        val importer = Importer(gatewayEngine) { it in images }
+        val request = importer.preview(file, home = home, cwd = nobody).request
+        importer.apply(request)
+        return importer.applyGateway(request.app, file.gateway!!, home = home, cwd = nobody)
+    }
+
+    @Test
+    fun `import writes gateway yml and lists unset secrets`() {
+        gatewayEngine.create("shop", services = listOf("gateway"))
+        gatewayEngine.secrets.setSecret("shop", "OTHER", "set-already")
+
+        val result = importGateway(gatewayFile())
+
+        assertTrue(result.configWritten)
+        assertEquals(gatewayYml, Files.readString(gatewayEngine.appDir("shop").resolve("gateway.yml")))
+        assertEquals(listOf("API_KEY"), result.unsetSecrets)
+    }
+
+    @Test
+    fun `authorizers are recorded only when their image is on this machine`() {
+        val home = Files.createTempDirectory("home")
+        Files.createDirectories(home.resolve("code/my-api/auth/check"))
+        val file =
+            gatewayFile(
+                authorizers =
+                    listOf(
+                        ExportedAuthorizer("check", ExportedPath("my-api", "auth/check"), 9001),
+                        ExportedAuthorizer("gone", ExportedPath("other-repo", "auth"), 8080),
+                    ),
+            )
+
+        val result = importGateway(file, images = setOf("gantry-shop-auth-check:latest"), home = home)
+
+        val recorded = gatewayEngine.loadApp("shop").authorizers
+        assertEquals(listOf(PushedAuthorizer("check", "my-api/auth/check", 9001, "gantry-shop-auth-check:latest")), recorded)
+        assertEquals(listOf("check"), result.recorded)
+        assertEquals(mapOf("gone" to "<other-repo checkout>/auth"), result.toPush)
+        assertContains(Files.readString(gatewayEngine.appDir("shop").resolve("compose.yml")), "auth-check:")
+    }
+
+    @Test
+    fun `the push hint points at a found checkout`() {
+        val home = Files.createTempDirectory("home")
+        val checkout = Files.createDirectories(home.resolve("code/my-api/auth/check"))
+        val file = gatewayFile(authorizers = listOf(ExportedAuthorizer("check", ExportedPath("my-api", "auth/check"))))
+
+        val result = importGateway(file, home = home)
+
+        assertEquals(mapOf("check" to checkout.toString()), result.toPush)
+        assertEquals(emptyList(), gatewayEngine.loadApp("shop").authorizers)
+    }
+
+    @Test
+    fun `a gateway section is ignored when the import has no gateway service`() {
+        val file = gatewayFile(services = mapOf("valkey" to ExportedService()))
+        val importer = Importer(gatewayEngine) { true }
+        val request = importer.preview(file, cwd = nobody, home = nobody).request
+        importer.apply(request)
+
+        val result = importer.applyGateway("shop", file.gateway!!, home = nobody, cwd = nobody)
+
+        assertFalse(result.configWritten)
+        assertFalse(Files.exists(gatewayEngine.appDir("shop").resolve("gateway.yml")))
+        assertEquals(emptyList(), gatewayEngine.loadApp("shop").authorizers)
+    }
+
+    @Test
+    fun `an invalid gateway section is reported before anything is applied`() {
+        val importer = Importer(gatewayEngine)
+        assertTrue(importer.validateGateway(ExportedGateway("default:\n  auth: nobody\n")).any { "nobody" in it })
+        assertTrue(
+            importer.validateGateway(ExportedGateway("", listOf(ExportedAuthorizer("Bad_Name", ExportedPath(null, "/x"))))).isNotEmpty(),
+        )
+        assertTrue(
+            importer.validateGateway(ExportedGateway("", listOf(ExportedAuthorizer("ok", ExportedPath(null, "/x"), 0)))).isNotEmpty(),
+        )
+        assertEquals(emptyList(), importer.validateGateway(ExportedGateway(gatewayYml)))
+    }
+
+    @Test
+    fun `an export file from before the gateway still imports`() {
+        val old = """{"gantry": 1, "app": "shop", "services": {"valkey": {}}, "envNames": {}}"""
+        val file = parseExportFile(old)
+        assertNull(file.gateway)
+        val p = preview(file)
+        assertEquals("shop", Importer(engine).apply(p.request).name)
+    }
+
+    @Test
+    fun `a gateway section that would not render fails validation before anything is created`() {
+        listOf(
+            "upstream: http://localhost:9000/with/path\n" to "must not have a path",
+            "routes:\n  - name: r\n    match: {path: /x}\n    upstream: ftp://files\n" to "http(s)",
+            "routes:\n  - name: r\n    match: {path: /x}\n    rewrite:\n      addPrefix: \"/{{uid}}\"\n" to "'{{'",
+        ).forEach { (config, expected) ->
+            val importer = Importer(gatewayEngine) { false }
+            val request = importer.preview(gatewayFile(config = config), home = nobody, cwd = nobody).request
+            assertTrue(importer.validate(request).any { expected in it }, "$config: ${importer.validate(request)}")
+            assertFailsWith<GantryException> { importer.apply(request) }
+            assertFalse(Files.exists(gatewayEngine.appDir("shop").resolve("app.json")))
+        }
+    }
+
+    @Test
+    fun `the gateway section travels in the request and apply applies it`() {
+        val importer = Importer(gatewayEngine) { false }
+        val request = importer.preview(gatewayFile(), home = nobody, cwd = nobody).request
+        assertEquals(gatewayYml, request.gateway?.config)
+
+        val imported = importer.importApp(request, home = nobody, cwd = nobody)
+
+        assertEquals(gatewayYml, Files.readString(gatewayEngine.appDir("shop").resolve("gateway.yml")))
+        assertEquals(listOf("API_KEY", "OTHER"), imported.gateway?.unsetSecrets)
+    }
+
+    @Test
+    fun `a gateway section without a gateway service is a preview warning`() {
+        val p = Importer(gatewayEngine).preview(gatewayFile(services = mapOf("valkey" to ExportedService())), home = nobody, cwd = nobody)
+        assertTrue(p.warnings.any { "gateway.yml" in it && "ignored" in it }, p.warnings.toString())
     }
 }

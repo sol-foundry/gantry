@@ -3,6 +3,7 @@ package dev.gantry.share
 import dev.gantry.engine.GantryException
 import dev.gantry.engine.SourceSettings
 import dev.gantry.engine.json
+import dev.gantry.gateway.DEFAULT_AUTHORIZER_PORT
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
@@ -18,6 +19,23 @@ data class ExportFile(
     val app: String,
     val services: Map<String, ExportedService>,
     val envNames: Map<String, String> = emptyMap(),
+    /** Absent in files from before the gateway, and for apps without one. */
+    val gateway: ExportedGateway? = null,
+)
+
+/** The gateway's `gateway.yml`, as text, and the custom authorizers pushed for it. Secrets are only ever referenced. */
+@Serializable
+data class ExportedGateway(
+    val config: String,
+    val authorizers: List<ExportedAuthorizer> = emptyList(),
+)
+
+/** A pushed authorizer: where its code lives, not the image, which each machine builds itself. */
+@Serializable
+data class ExportedAuthorizer(
+    val name: String,
+    val dir: ExportedPath,
+    val port: Int = DEFAULT_AUTHORIZER_PORT,
 )
 
 @Serializable

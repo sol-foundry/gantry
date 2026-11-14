@@ -5,6 +5,13 @@ import dev.gantry.db.SyncContainers
 import dev.gantry.engine.Engine
 import dev.gantry.engine.NO_DOCKER
 import dev.gantry.engine.SourceSettings
+import dev.gantry.share.ExportFile
+import dev.gantry.share.ExportedAuthorizer
+import dev.gantry.share.ExportedGateway
+import dev.gantry.share.ExportedPath
+import dev.gantry.share.ExportedService
+import dev.gantry.share.Importer
+import dev.gantry.share.encode
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.put
@@ -16,6 +23,10 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import java.sql.SQLException
 import kotlin.test.Test
@@ -24,7 +35,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class ShareRoutesTest {
-    private val gantry = Engine(home = Files.createTempDirectory("gantry-share-routes-test"), dockerCommand = NO_DOCKER)
+    private val gantry =
+        Engine(
+            home = Files.createTempDirectory("gantry-share-routes-test"),
+            dockerCommand = NO_DOCKER,
+            gatewayLib = Files.createTempDirectory("gantry-lib").also { Files.writeString(it.resolve("gantry.jar"), "jar") },
+        )
 
     private val noContainers =
         object : SyncContainers {
@@ -44,9 +60,10 @@ class ShareRoutesTest {
 
     private fun dashboard(
         sync: Sync = Sync(gantry),
+        importer: Importer = Importer(gantry) { false },
         block: suspend ApplicationTestBuilder.() -> Unit,
     ) = testApplication {
-        application { dashboardModule(gantry, sync) }
+        application { dashboardModule(gantry, sync, importer = importer) }
         block()
     }
 
@@ -247,5 +264,66 @@ class ShareRoutesTest {
             assertEquals("s3cret", gantry.secrets.password("shop", "postgres"))
             assertContains(client.get("/api/apps/shop/db/postgres/source/password").bodyAsText(), "\"password\":\"s3cret\"")
             assertTrue(!Files.readString(gantry.appDir("shop").resolve("app.json")).contains("s3cret"))
+        }
+
+    @Test
+    fun `a dashboard import applies the gateway section and reports what is left to do`() =
+        dashboard {
+            val yml = "authorizers:\n  mine:\n    type: custom\n    container: check\n    env:\n      KEY: \"{{secret:API_KEY}}\"\n"
+            val file =
+                ExportFile(
+                    app = "shop",
+                    services = mapOf("gateway" to ExportedService()),
+                    gateway = ExportedGateway(yml, listOf(ExportedAuthorizer("check", ExportedPath(null, "/src/check")))),
+                )
+            val preview = postJson("/api/import/preview", Json.encodeToString(mapOf("file" to file.encode())))
+            assertEquals(HttpStatusCode.OK, preview.status, preview.bodyAsText())
+            // The dialog sends back the preview's request as it is, edited in place.
+            val request =
+                Json
+                    .parseToJsonElement(preview.bodyAsText())
+                    .jsonObject
+                    .getValue("request")
+                    .toString()
+            assertContains(request, "\"gateway\"")
+
+            val applied = postJson("/api/import/apply", request)
+
+            assertEquals(HttpStatusCode.OK, applied.status, applied.bodyAsText())
+            assertEquals(yml, Files.readString(gantry.appDir("shop").resolve("gateway.yml")))
+            val body = Json.parseToJsonElement(applied.bodyAsText()).jsonObject
+            assertEquals(listOf("API_KEY"), body.getValue("unsetSecrets").jsonArray.map { it.jsonPrimitive.content })
+            assertEquals(
+                "/src/check",
+                body
+                    .getValue("toPush")
+                    .jsonObject
+                    .getValue("check")
+                    .jsonPrimitive.content,
+            )
+        }
+
+    @Test
+    fun `validate reports a gateway section that would not render`() =
+        dashboard {
+            val file =
+                ExportFile(
+                    app = "shop",
+                    services = mapOf("gateway" to ExportedService()),
+                    gateway = ExportedGateway("upstream: http://localhost:9000/with/path\n"),
+                )
+            val preview = postJson("/api/import/preview", Json.encodeToString(mapOf("file" to file.encode())))
+            val request =
+                Json
+                    .parseToJsonElement(preview.bodyAsText())
+                    .jsonObject
+                    .getValue("request")
+                    .toString()
+
+            val validation = postJson("/api/import/validate", request).bodyAsText()
+
+            assertContains(validation, "must not have a path")
+            assertEquals(HttpStatusCode.BadRequest, postJson("/api/import/apply", request).status)
+            assertTrue(gantry.listApps().none { it.name == "shop" })
         }
 }
