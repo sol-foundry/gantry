@@ -33,7 +33,7 @@ object PgFrames {
 /**
  * Splits one direction of a connection into [PgMessage]s, whatever the read boundaries. A client stream starts in the
  * [startupPhase]: untyped frames until the StartupMessage (an SSLRequest or GSSENCRequest is followed by another).
- * Frames past [maxPayload] keep their first bytes and the rest is skipped. A malformed length stops the reader.
+ * Frames past [maxPayload] keep their first [maxPayload] bytes and the rest is skipped. A malformed length stops the reader.
  */
 class PgFrameReader(
     startupPhase: Boolean,
@@ -47,6 +47,7 @@ class PgFrameReader(
     private var payloadFill = 0
     private var cut = false
     private var skip = 0L
+    private var tail = 0L
     private var broken = false
 
     fun feed(
@@ -98,7 +99,7 @@ class PgFrameReader(
         }
         val size = length - 4
         cut = size > maxPayload
-        skip = if (cut) (size - maxPayload).toLong() else 0L
+        tail = if (cut) (size - maxPayload).toLong() else 0L
         val body = ByteArray(minOf(size, maxPayload))
         payloadFill = 0
         if (body.isEmpty()) return finish(body)
@@ -108,6 +109,8 @@ class PgFrameReader(
 
     private fun finish(body: ByteArray): PgMessage {
         payload = null
+        skip = tail
+        tail = 0
         if (untyped) {
             val code = if (body.size >= 4) PgReader(body).int32() else 0
             untyped = code == SSL_REQUEST || code == GSSENC_REQUEST
@@ -164,8 +167,14 @@ internal class PgReader(
         return String(b, start, pos++ - start, UTF_8)
     }
 
-    fun bytes(n: Int): ByteArray {
+    fun bytes(n: Int): ByteArray = slice(n, n)
+
+    /** Reads an [n]-byte value but copies only its first [keep] bytes. */
+    fun slice(
+        n: Int,
+        keep: Int,
+    ): ByteArray {
         if (n < 0 || n > remaining) throw IndexOutOfBoundsException("payload ended")
-        return b.copyOfRange(pos, pos + n).also { pos += n }
+        return b.copyOfRange(pos, pos + minOf(n, keep)).also { pos += n }
     }
 }

@@ -61,17 +61,22 @@ class PgSession(
         var suspended: Run? = null
     }
 
+    /** Row bytes held across the entries of one simple query, which are only emitted at its ReadyForQuery. */
+    private class Budget {
+        var used = 0L
+    }
+
     /** One statement's execution, collecting its rows until it completes. */
     private inner class Run(
         var sql: String,
         val portal: Portal?,
+        private val budget: Budget = Budget(),
     ) {
         var start: Instant? = null
         var columns: List<Column>? = null
         var formats: IntArray = IntArray(0)
         val rows = ArrayList<List<String?>>()
         var count = 0L
-        var bytes = 0L
         var full = false
         var truncated = portal?.cut ?: false
         var done = false
@@ -86,7 +91,7 @@ class PgSession(
 
         fun addRow(payload: ByteArray) {
             count++
-            if (full || rows.size >= limits.maxRows) {
+            if (full || rows.size >= limits.maxRows || budget.used >= limits.maxBytes) {
                 full = true
                 truncated = true
                 return
@@ -99,26 +104,31 @@ class PgSession(
                         if (length < 0) {
                             null
                         } else {
-                            val type = columns?.getOrNull(i)?.type ?: 0
-                            keep(PgValues.decode(type, formatOf(formats, i), r.bytes(length)))
+                            keep(columns?.getOrNull(i)?.type ?: 0, formatOf(formats, i), r.slice(length, sliceCap))
                         }
                     }
                 val size = values.sumOf { it?.toByteArray(UTF_8)?.size ?: 0 }
-                if (bytes + size > limits.maxBytes) {
+                if (budget.used + size > limits.maxBytes) {
                     full = true
                     truncated = true
                     return
                 }
                 rows += values
-                bytes += size
+                budget.used += size
             } catch (_: Exception) {
                 truncated = true
             }
         }
 
-        fun keep(value: String): String {
+        /** Decodes a value read with [sliceCap], so a value longer than maxBytes arrives cut and is marked so. */
+        fun keep(
+            type: Int,
+            format: Int,
+            raw: ByteArray,
+        ): String {
+            val value = PgValues.decode(type, format, raw, limits.maxBytes)
             val cut = cut(value, limits.maxBytes)
-            if (cut.length != value.length) truncated = true
+            if (raw.size > limits.maxBytes || cut.length != value.length) truncated = true
             return cut
         }
     }
@@ -162,17 +172,19 @@ class PgSession(
         val sql: String,
     ) : Boundary(at) {
         val results = ArrayList<Run>()
+        val budget = Budget()
         var current: Run? = null
         var next: Instant? = null
         var failed = false
 
         fun run(now: Instant): Run =
-            current ?: Run(sql, null).also {
+            current ?: Run(sql, null, budget).also {
                 it.start = next ?: maxOf(at, now)
                 current = it
             }
     }
 
+    private val sliceCap = if (limits.maxBytes == Int.MAX_VALUE) Int.MAX_VALUE else limits.maxBytes + 1
     private val statements = HashMap<String, Statement>()
     private val portals = HashMap<String, Portal>()
     private val queue = ArrayDeque<Pending>()
@@ -220,7 +232,7 @@ class PgSession(
                 var resultFormats = IntArray(0)
                 var cut = m.cut
                 try {
-                    repeat(r.int16()) { params += r.int32().let { n -> if (n < 0) null else r.bytes(n) } }
+                    repeat(r.int16()) { params += r.int32().let { n -> if (n < 0) null else r.slice(n, sliceCap) } }
                     resultFormats = IntArray(r.int16()) { r.int16() }
                 } catch (_: IndexOutOfBoundsException) {
                     cut = true
@@ -464,7 +476,7 @@ class PgSession(
                 columns = run.columns?.map { it.name },
                 rows = if (run.columns != null || run.count > 0) run.rows.toList() else null,
                 rowCount = if (returnsRows) (if (run.count > 0) run.count else number ?: run.count) else null,
-                affected = if (returnsRows) null else number,
+                affected = if (verb in AFFECTING_VERBS || !returnsRows) number else null,
                 command = verb,
                 error = done.error,
                 truncated = run.truncated,
@@ -479,7 +491,7 @@ class PgSession(
     private fun params(run: Run): List<String?> {
         val portal = run.portal ?: return emptyList()
         return portal.params.mapIndexed { i, bytes ->
-            bytes?.let { run.keep(PgValues.decode(portal.statement.paramTypes.getOrElse(i) { 0 }, formatOf(portal.paramFormats, i), it)) }
+            bytes?.let { run.keep(portal.statement.paramTypes.getOrElse(i) { 0 }, formatOf(portal.paramFormats, i), it) }
         }
     }
 
@@ -519,6 +531,7 @@ class PgSession(
 
     private companion object {
         const val MAX_PENDING = 10_000
+        val AFFECTING_VERBS = setOf("INSERT", "UPDATE", "DELETE", "MERGE", "COPY", "MOVE")
 
         fun formatOf(
             formats: IntArray,

@@ -448,6 +448,92 @@ class PgSessionTest {
     }
 
     @Test
+    fun `an oversize bind read through the frame reader logs its own SQL and the parameters that fit`() {
+        val s = session()
+        val reader = PgFrameReader(startupPhase = false, maxPayload = 64)
+        val stream =
+            listOf(
+                Pg.parse("S_1", "insert into blobs(name, data) values ($1, $2)", TEXT, 17),
+                Pg.bind("", "S_1", "logo.png", ByteArray(500) { 7 }),
+                Pg.execute(""),
+                Pg.sync(),
+            ).fold(ByteArray(0)) { acc, m -> acc + PgFrames.encode(m) }
+        stream
+            .toList()
+            .chunked(13)
+            .flatMap { reader.feed(it.toByteArray()) }
+            .forEach(s::fromClient)
+        s.server(Pg.parseComplete(), Pg.bindComplete(), Pg.commandComplete("INSERT 0 1"), Pg.ready())
+
+        val e = entries.single()
+        assertEquals("insert into blobs(name, data) values ($1, $2)", e.sql)
+        assertEquals("logo.png", e.params.first())
+        assertTrue(e.truncated)
+    }
+
+    @Test
+    fun `a statement that returns rows still reports the rows it affected`() {
+        val s = session()
+        s.client(Pg.query("insert into t(a) values (1), (2) returning id"))
+        s.server(
+            Pg.rowDescription("id" to INT4),
+            Pg.dataRow("10"),
+            Pg.dataRow("11"),
+            Pg.commandComplete("INSERT 0 2"),
+            Pg.ready(),
+        )
+
+        val e = entries.single()
+        assertEquals("INSERT", e.command)
+        assertEquals(2L, e.affected)
+        assertEquals(2L, e.rowCount)
+        assertEquals(listOf(listOf<String?>("10"), listOf("11")), e.rows)
+    }
+
+    @Test
+    fun `a simple query with many row-returning statements keeps at most one entry's bytes in total`() {
+        val s = session(Limits(maxRows = 1000, maxBytes = 100))
+        val statements = 20
+        s.client(Pg.query((1..statements).joinToString("; ") { "select v from t$it" }))
+        repeat(statements) {
+            s.server(Pg.rowDescription("v" to TEXT))
+            repeat(5) { s.server(Pg.dataRow("y".repeat(10))) }
+            s.server(Pg.commandComplete("SELECT 5"))
+        }
+        s.server(Pg.ready())
+
+        assertEquals(statements, entries.size)
+        val kept = entries.sumOf { e -> e.rows.orEmpty().sumOf { row -> row.sumOf { it?.length ?: 0 } } }
+        assertTrue(kept <= 100, "kept $kept bytes")
+        assertEquals(5L, entries.last().rowCount)
+        assertTrue(entries.last().truncated)
+        assertEquals(listOf(listOf<String?>("y".repeat(10))), entries.first().rows?.take(1))
+    }
+
+    @Test
+    fun `a huge value decodes to a capped string quickly`() {
+        val s = session(Limits(maxRows = 1000, maxBytes = 1000))
+        val huge = ByteArray(16 * 1024 * 1024) { it.toByte() }
+        s.client(Pg.parse("", "select data from blobs"), Pg.bind("", "", resultFormats = listOf(1)), Pg.describe('P', ""))
+        s.client(Pg.execute(""), Pg.sync())
+        s.server(Pg.parseComplete(), Pg.bindComplete(), Pg.rowDescription("data" to 17))
+        val started = System.nanoTime()
+        s.server(Pg.dataRow(huge), Pg.commandComplete("SELECT 1"), Pg.ready())
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+
+        val value =
+            entries
+                .single()
+                .rows!!
+                .single()
+                .single()!!
+        assertTrue(value.length <= 1000, "value is ${value.length} chars")
+        assertTrue(value.startsWith("\\x000102"))
+        assertTrue(entries.single().truncated)
+        assertTrue(elapsedMs < 500, "took $elapsedMs ms")
+    }
+
+    @Test
     fun `unexpected input never throws`() {
         val s = session()
         s.fromClient(PgMessage('P', byteArrayOf(1, 2)))

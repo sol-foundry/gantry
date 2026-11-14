@@ -2,6 +2,8 @@ package dev.gantry.dblog.postgres
 
 import java.math.BigDecimal
 import java.nio.ByteBuffer
+import java.nio.CharBuffer
+import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets.UTF_8
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -15,20 +17,58 @@ object PgValues {
     private val epoch = epochDate.atStartOfDay()
     private val timeFormat = DateTimeFormatter.ISO_LOCAL_TIME
 
+    private val textTypes = setOf(18, 19, 25, 114, 705, 1042, 1043)
+    private const val JSONB = 3802
+    private val hexDigits = "0123456789abcdef".toCharArray()
+
+    /**
+     * Decodes [bytes] as [typeOid] in [format]. When [bytes] is longer than [maxBytes], only a prefix is read, so the
+     * work and the result stay within about [maxBytes] however large the value.
+     */
     fun decode(
         typeOid: Int,
         format: Int,
         bytes: ByteArray,
+        maxBytes: Int = Int.MAX_VALUE,
     ): String {
+        if (bytes.size > maxBytes) {
+            return when {
+                format == 0 || typeOid in textTypes -> utf8Prefix(bytes, 0, maxBytes)
+                typeOid == JSONB && bytes[0].toInt() == 1 -> utf8Prefix(bytes, 1, maxBytes)
+                else -> hex(bytes, maxOf(0, (maxBytes - 2) / 2))
+            }
+        }
         if (format == 0) return String(bytes, UTF_8)
         return runCatching { binary(typeOid, bytes) }.getOrNull() ?: hex(bytes)
     }
 
-    fun hex(bytes: ByteArray): String =
-        buildString(2 + bytes.size * 2) {
-            append("\\x")
-            bytes.forEach { append("%02x".format(it.toInt() and 0xFF)) }
+    fun hex(
+        bytes: ByteArray,
+        count: Int = bytes.size,
+    ): String {
+        val n = minOf(count, bytes.size)
+        val out = CharArray(2 + n * 2)
+        out[0] = '\\'
+        out[1] = 'x'
+        for (i in 0 until n) {
+            val v = bytes[i].toInt()
+            out[2 + i * 2] = hexDigits[v shr 4 and 0xF]
+            out[3 + i * 2] = hexDigits[v and 0xF]
         }
+        return String(out)
+    }
+
+    // A multi-byte character split at the cut is dropped rather than replaced.
+    private fun utf8Prefix(
+        bytes: ByteArray,
+        from: Int,
+        maxBytes: Int,
+    ): String {
+        val decoder = UTF_8.newDecoder().onMalformedInput(CodingErrorAction.IGNORE)
+        val out = CharBuffer.allocate(maxBytes)
+        decoder.decode(ByteBuffer.wrap(bytes, from, minOf(maxBytes, bytes.size - from)), out, true)
+        return out.flip().toString()
+    }
 
     private fun binary(
         type: Int,
@@ -51,7 +91,7 @@ object PgValues {
             1184 -> if (sized(8)) timestamp(buf.long, "+00") else null
             1700 -> numeric(buf)
             18, 19, 25, 114, 705, 1042, 1043 -> String(b, UTF_8)
-            3802 -> if (b.isNotEmpty() && b[0].toInt() == 1) String(b, 1, b.size - 1, UTF_8) else null
+            JSONB -> if (b.isNotEmpty() && b[0].toInt() == 1) String(b, 1, b.size - 1, UTF_8) else null
             else -> null
         }
     }

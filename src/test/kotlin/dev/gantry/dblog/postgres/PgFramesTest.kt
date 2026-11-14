@@ -42,7 +42,7 @@ class PgFramesTest {
         val messages = bytes.toList().chunked(7).flatMap { reader.feed(it.toByteArray()) }
 
         assertEquals(listOf('D', 'Z'), messages.map { it.type })
-        assertEquals(8, messages[0].payload.size)
+        assertContentEquals(big.payload.copyOf(8), messages[0].payload)
         assertTrue(messages[0].cut)
     }
 }
