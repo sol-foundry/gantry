@@ -45,10 +45,15 @@ data class DatabaseTarget(
     }
 
     companion object {
+        /**
+         * The database is on `direct` / `<service>-db` only once `up` has moved it there, whatever app.json says now:
+         * it is re-rendered by `env`, `add` and the dashboard, ahead of the containers. So the live layout decides.
+         */
         fun resolve(
             engine: Engine,
             app: String,
             service: String,
+            running: (container: String) -> Boolean = engine.docker::isRunning,
         ): DatabaseTarget {
             val appState = engine.loadApp(app)
             val id = engine.catalog.resolve(service).id
@@ -56,8 +61,7 @@ data class DatabaseTarget(
             val state = appState.service(id) ?: throw GantryException("app '$app' has no $id service")
             val options = engine.serviceOptions(appState, id)
             val database = options.getValue("name")
-            // An app last rendered by an older gantry has no direct port yet: its database is still on main.
-            val proxied = options["query_log"] == "true" && DIRECT_PORT in state.ports
+            val proxied = DIRECT_PORT in state.ports && running("$app-${databaseServiceName(id, true)}")
             return DatabaseTarget(
                 app = app,
                 service = id,

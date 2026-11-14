@@ -136,15 +136,60 @@ class QueryLogServiceTest {
         assertTrue(DatabaseTarget.resolve(bare, "shop", "postgres").jdbcUrl.contains(":$main/"))
     }
 
+    private val proxyRunning = { container: String -> container.endsWith("-db") }
+
     @Test
-    fun `gantry's own tools connect on direct`() {
+    fun `once the proxy runs, tools use direct`() {
         engine.create("shop", services = listOf("postgres", "mysql"))
         listOf("postgres", "mysql").forEach { id ->
             val ports = engine.loadApp("shop").service(id)!!.ports
-            val target = DatabaseTarget.resolve(engine, "shop", id)
+            val target = DatabaseTarget.resolve(engine, "shop", id) { it == "shop-$id-db" }
             assertContains(target.jdbcUrl, "127.0.0.1:${ports.getValue("direct")}/")
             assertEquals("$id-db", target.networkHost)
         }
+        // Even with query_log since turned off: until the next up, the database is still the -db container.
+        engine.add("shop", "postgres", mapOf("query_log" to "false"))
+        assertEquals("postgres-db", DatabaseTarget.resolve(engine, "shop", "postgres", proxyRunning).networkHost)
+    }
+
+    @Test
+    fun `before the next up, tools still reach the database on main`() {
+        engine.create("shop", services = listOf("postgres", "mysql"))
+        listOf("postgres", "mysql").forEach { id ->
+            val main =
+                engine
+                    .loadApp("shop")
+                    .service(id)!!
+                    .ports
+                    .getValue("main")
+            val target = DatabaseTarget.resolve(engine, "shop", id) { false }
+            assertContains(target.jdbcUrl, "127.0.0.1:$main/")
+            assertEquals(id, target.networkHost)
+        }
+    }
+
+    @Test
+    fun `the live layout is read from the database container`() {
+        val tools = Files.createTempDirectory("gantry-fake-docker")
+        val docker = tools.resolve("docker")
+        docker.writeText(
+            "#!/bin/sh\nfor last; do :; done\n[ \"\$1\" = inspect ] && [ \"\$last\" = shop-postgres-db ] && echo true && exit 0\n" +
+                "echo 'Error: No such container' >&2; exit 1\n",
+        )
+        Files.setPosixFilePermissions(
+            docker,
+            java.nio.file.attribute.PosixFilePermissions
+                .fromString("rwx------"),
+        )
+        val live = Engine(home = Files.createTempDirectory("gantry-live"), dockerCommand = docker.toString(), runtimeLib = TEST_RUNTIME_LIB)
+        live.create("shop", services = listOf("postgres", "mysql"))
+        assertEquals("postgres-db", DatabaseTarget.resolve(live, "shop", "postgres").networkHost)
+        assertEquals("mysql", DatabaseTarget.resolve(live, "shop", "mysql").networkHost)
+    }
+
+    @Test
+    fun `agents and the app stay on main`() {
+        engine.create("shop", services = listOf("postgres"))
         // What the app and agents are given stays on main, so their queries are logged.
         val app = engine.loadApp("shop")
         val env = engine.env(app).toMap()
@@ -158,16 +203,14 @@ class QueryLogServiceTest {
     fun `an existing app keeps its data volume and main port when the proxy is added`() {
         engine.create("shop", services = listOf("postgres"))
         val main = ports().getValue("main")
-        // As an older gantry left it: no direct port, no query log options.
+        // As an older gantry left it: no direct port.
         val portsFile = home.resolve("ports.json")
         val registry = Json.parseToJsonElement(portsFile.readText()).jsonObject.filterKeys { !it.endsWith("/direct") }
         portsFile.writeText(JsonObject(registry).toString())
         val old = engine.loadApp("shop").let { app -> app.copy(services = app.services.map { it.copy(ports = it.ports - "direct") }) }
         dir.resolve("app.json").writeText(Json.encodeToString(App.serializer(), old))
         assertNull(engine.loadApp("shop").service("postgres")!!.ports["direct"])
-        // Until the next render its compose still has the database on main.
-        assertContains(DatabaseTarget.resolve(engine, "shop", "postgres").jdbcUrl, ":$main/")
-        assertEquals("postgres", DatabaseTarget.resolve(engine, "shop", "postgres").networkHost)
+        assertContains(DatabaseTarget.resolve(engine, "shop", "postgres", proxyRunning).jdbcUrl, ":$main/")
 
         engine.refresh("shop")
         assertEquals(main, ports().getValue("main"))
@@ -185,13 +228,12 @@ class QueryLogServiceTest {
         engine.create("shop", services = listOf("postgres", "mysql"))
         val source = SourceSettings("stage", 5432, "shop", "me")
         listOf(Dialect.Postgres to "-h postgres-db ", Dialect.MySql to "-h mysql-db ").forEach { (dialect, host) ->
-            val target = DatabaseTarget.resolve(engine, "shop", dialect.id)
+            val target = DatabaseTarget.resolve(engine, "shop", dialect.id, proxyRunning)
             assertContains(copyScript(dialect, source, target, "gantry-shop_default").last(), host)
             assertContains(tableCopyScript(dialect, source, target, parseTables(dialect, listOf("t")), "gantry-shop_default").last(), host)
         }
 
-        engine.add("shop", "postgres", mapOf("query_log" to "false"))
-        val plain = DatabaseTarget.resolve(engine, "shop", "postgres")
+        val plain = DatabaseTarget.resolve(engine, "shop", "postgres") { false }
         assertContains(copyScript(Dialect.Postgres, source, plain, "gantry-shop_default").last(), "-h postgres ")
     }
 
@@ -223,6 +265,10 @@ class QueryLogServiceTest {
 
         log.writeText("")
         images.writeText("shop-postgres eclipse-temurin:17-jre\nshop-postgres-db postgres:16-alpine\n")
+        live.docker.up("shop")
+        assertFalse(log.readText().lines().any { it.startsWith("stop ") }, log.readText())
+        // A newer proxy image is still the proxy, not the database.
+        images.writeText("shop-postgres eclipse-temurin:21-jre\nshop-postgres-db postgres:16-alpine\n")
         live.docker.up("shop")
         assertFalse(log.readText().lines().any { it.startsWith("stop ") }, log.readText())
 

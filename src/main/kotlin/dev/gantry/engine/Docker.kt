@@ -109,6 +109,10 @@ class Docker(
         }
     }
 
+    /** Whether [container] exists and runs; false when Docker cannot say. */
+    fun isRunning(container: String): Boolean =
+        (query(listOf("inspect", "--type", "container", "-f", "{{.State.Running}}", container)) as? Query.Ok)?.output?.trim() == "true"
+
     /** False when the volume is absent or Docker cannot be asked (not installed, daemon down). */
     fun volumeExists(name: String): Boolean = runCatching { run(listOf("volume", "inspect", name)) }.isSuccess
 
@@ -155,7 +159,8 @@ class Docker(
             val image =
                 runCatching { run(listOf("inspect", "--type", "container", "-f", "{{.Config.Image}}", name)).trim() }.getOrNull()
                     ?: return@forEach
-            if (proxied && image == QUERY_LOG_IMAGE) return@forEach
+            // Only the database's own image: a proxy on any JRE tag must keep running.
+            if (!image.startsWith("${state.id}:")) return@forEach
             runCatching { run(listOf("stop", name)) }
         }
     }
