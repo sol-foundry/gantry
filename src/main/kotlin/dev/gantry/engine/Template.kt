@@ -28,6 +28,8 @@ object Template {
             "apisix_config" to ::apisixConfigBlock,
             "apisix_routes" to ::apisixRoutesBlock,
             "authorizer_services" to ::authorizerServicesBlock,
+            "query_log_proxy" to ::queryLogProxy,
+            "db_service_name" to ::dbServiceName,
         )
 
     /**

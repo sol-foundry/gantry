@@ -24,7 +24,7 @@ class McpServerTest {
         Engine(
             home = Files.createTempDirectory("gantry-mcp-test"),
             dockerCommand = NO_DOCKER,
-            gatewayLib = Files.createTempDirectory("gantry-lib").also { it.resolve("gantry-0.0.0.jar").writeText("jar bytes") },
+            runtimeLib = Files.createTempDirectory("gantry-lib").also { it.resolve("gantry-0.0.0.jar").writeText("jar bytes") },
         ).apply {
             create("shop", services = listOf("postgres"))
         }

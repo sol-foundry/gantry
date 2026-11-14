@@ -1,13 +1,18 @@
 package dev.gantry.db
 
+import dev.gantry.engine.DIRECT_PORT
 import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
+import dev.gantry.engine.databaseServiceName
 import java.nio.file.Path
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.SQLException
 
-/** How to reach one SQL service of an app from the host, plus where its Flyway migrations live. */
+/**
+ * How gantry's own tools reach one SQL service of an app, from the host and from the app's Docker network
+ * ([networkHost]), plus where its Flyway migrations live. Both bypass the query-log proxy.
+ */
 data class DatabaseTarget(
     val app: String,
     val service: String,
@@ -18,6 +23,7 @@ data class DatabaseTarget(
     val password: String,
     val migrations: Path,
     val migrateOnUp: Boolean,
+    val networkHost: String = service,
 ) {
     fun <T> connect(block: (Connection) -> T): T {
         val connection =
@@ -50,16 +56,19 @@ data class DatabaseTarget(
             val state = appState.service(id) ?: throw GantryException("app '$app' has no $id service")
             val options = engine.serviceOptions(appState, id)
             val database = options.getValue("name")
+            // An app last rendered by an older gantry has no direct port yet: its database is still on main.
+            val proxied = options["query_log"] == "true" && DIRECT_PORT in state.ports
             return DatabaseTarget(
                 app = app,
                 service = id,
                 dialect = dialect,
-                jdbcUrl = dialect.jdbcUrl(state.ports.getValue("main"), database),
+                jdbcUrl = dialect.jdbcUrl(state.ports.getValue(if (proxied) DIRECT_PORT else "main"), database),
                 database = database,
                 user = options.getValue("user"),
                 password = options.getValue("password"),
                 migrations = Path.of(options.getValue("migrations")),
                 migrateOnUp = options["migrate_on_up"] == "true",
+                networkHost = databaseServiceName(id, proxied),
             )
         }
 

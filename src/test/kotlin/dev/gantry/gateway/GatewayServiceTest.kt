@@ -27,7 +27,7 @@ class GatewayServiceTest {
             it.resolve("gantry-0.0.0.jar").writeText("jar bytes")
             it.resolve("kaml.jar").writeText("more bytes")
         }
-    private val engine = Engine(home = home, dockerCommand = NO_DOCKER, gatewayLib = lib)
+    private val engine = Engine(home = home, dockerCommand = NO_DOCKER, runtimeLib = lib)
     private val dir get() = engine.appDir("shop")
 
     private val withSecrets =

@@ -595,7 +595,7 @@ internal fun tableCopyScript(
     val script =
         when (dialect) {
             Dialect.Postgres -> {
-                val local = "-h postgres -p 5432 -U ${shq(target.user)} -d $db"
+                val local = "-h ${target.networkHost} -p 5432 -U ${shq(target.user)} -d $db"
                 listOf(
                     "set -eu",
                     "set -o pipefail",
@@ -626,7 +626,7 @@ internal fun tableCopyScript(
             }
 
             Dialect.MySql -> {
-                val local = "--defaults-extra-file=/tmp/local.cnf -h mysql -P 3306 -u root"
+                val local = "--defaults-extra-file=/tmp/local.cnf -h ${target.networkHost} -P 3306 -u root"
                 val sqlString = { value: String -> "'" + value.replace("\\", "\\\\").replace("'", "''") + "'" }
                 listOf(
                     "set -euo pipefail",
@@ -751,7 +751,7 @@ internal fun copyScript(
     val script =
         when (dialect) {
             Dialect.Postgres -> {
-                val local = "-h postgres -p 5432 -U ${shq(target.user)}"
+                val local = "-h ${target.networkHost} -p 5432 -U ${shq(target.user)}"
                 listOf(
                     "set -eu",
                     "set -o pipefail",
@@ -769,7 +769,7 @@ internal fun copyScript(
             }
 
             Dialect.MySql -> {
-                val local = "--defaults-extra-file=/tmp/local.cnf -h mysql -P 3306 -u root"
+                val local = "--defaults-extra-file=/tmp/local.cnf -h ${target.networkHost} -P 3306 -u root"
                 val user = "'" + target.user.replace("\\", "\\\\").replace("'", "''") + "'"
                 val quoted = Dialect.MySql.quote(target.database)
                 val recreate = "DROP DATABASE IF EXISTS $quoted; CREATE DATABASE $quoted; GRANT ALL ON $quoted.* TO $user@'%'"

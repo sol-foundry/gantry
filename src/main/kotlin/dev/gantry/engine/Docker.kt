@@ -123,6 +123,7 @@ class Docker(
         val current = engine.refresh(app)
         if (current.services.isEmpty()) throw GantryException("no services; add some first")
         val authorizerEnvs = engine.authorizerEnvFiles(app)
+        stopDisplacedDatabases(current)
         // --remove-orphans stops services removed from the app; their ports are already back in the pool.
         compose(app, "up", "-d", "--wait", "--build", "--remove-orphans", stream = stream)
         // `up` recreated every authorizer whose env file changed, so pending ones get their routes back.
@@ -138,8 +139,25 @@ class Docker(
         app: String,
         service: String,
     ) {
-        engine.refresh(app)
+        stopDisplacedDatabases(engine.refresh(app))
         compose(app, "up", "-d", "--wait", engine.catalog.resolve(service).id)
+    }
+
+    /**
+     * Turning the query log on or off moves a database between `<service>` and `<service>-db`, and compose starts the
+     * new one before it replaces or removes the old: both would run on the same data volume. The old one is stopped
+     * first. Best effort: with no such container there is nothing to stop.
+     */
+    private fun stopDisplacedDatabases(app: App) {
+        app.services.filter { it.id in DATABASE_SERVICES }.forEach { state ->
+            val proxied = engine.serviceOptions(app, state.id)["query_log"] == "true"
+            val name = "${app.name}-${databaseServiceName(state.id, !proxied)}"
+            val image =
+                runCatching { run(listOf("inspect", "--type", "container", "-f", "{{.Config.Image}}", name)).trim() }.getOrNull()
+                    ?: return@forEach
+            if (proxied && image == QUERY_LOG_IMAGE) return@forEach
+            runCatching { run(listOf("stop", name)) }
+        }
     }
 
     /**

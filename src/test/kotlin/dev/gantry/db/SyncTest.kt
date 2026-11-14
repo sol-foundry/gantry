@@ -4,6 +4,7 @@ import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
 import dev.gantry.engine.NO_DOCKER
 import dev.gantry.engine.SourceSettings
+import dev.gantry.engine.TEST_RUNTIME_LIB
 import java.lang.reflect.Proxy
 import java.nio.file.Files
 import java.nio.file.Path
@@ -21,7 +22,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SyncTest {
-    private val engine = Engine(home = Files.createTempDirectory("gantry-sync-test"), dockerCommand = NO_DOCKER)
+    private val engine =
+        Engine(home = Files.createTempDirectory("gantry-sync-test"), dockerCommand = NO_DOCKER, runtimeLib = TEST_RUNTIME_LIB)
     private val stage = SourceSettings("stage-db.internal", 5432, "shop", "me")
 
     private fun target(
@@ -516,7 +518,7 @@ class SyncTest {
         val fake = home.resolve("docker")
         Files.writeString(fake, "#!/bin/sh\necho $$ > '$pidFile'\nwhile true; do echo line; sleep 0.05; done\n")
         fake.toFile().setExecutable(true)
-        val docker = Engine(home = home, dockerCommand = fake.toString()).docker
+        val docker = Engine(home = home, dockerCommand = fake.toString(), runtimeLib = TEST_RUNTIME_LIB).docker
         val started = System.currentTimeMillis()
         assertFailsWith<IllegalStateException> { docker.runContainer(listOf("image")) { throw IllegalStateException("listener broke") } }
         assertTrue(System.currentTimeMillis() - started < 5_000)

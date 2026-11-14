@@ -4,6 +4,7 @@ import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
 import dev.gantry.engine.NO_DOCKER
 import dev.gantry.engine.SourceSettings
+import dev.gantry.engine.TEST_RUNTIME_LIB
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
 import kotlin.io.path.writeText
@@ -14,7 +15,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ConnectionDetailsTest {
-    private val engine = Engine(home = Files.createTempDirectory("gantry-mcp-test"), dockerCommand = NO_DOCKER)
+    private val engine =
+        Engine(home = Files.createTempDirectory("gantry-mcp-test"), dockerCommand = NO_DOCKER, runtimeLib = TEST_RUNTIME_LIB)
 
     @Test
     fun `lists each service with its mapped env`() {
@@ -107,7 +109,9 @@ class ConnectionDetailsTest {
         val script = Files.createTempDirectory("gantry-fake-docker").resolve("docker")
         script.writeText("#!/bin/sh\ncase \"$1\" in\n  version) $version ;;\n  compose) $compose ;;\nesac\n")
         script.toFile().setExecutable(true)
-        return Engine(home = engine.home, dockerCommand = script.toString()).also { it.create("shop", services = listOf("postgres")) }
+        return Engine(home = engine.home, dockerCommand = script.toString(), runtimeLib = TEST_RUNTIME_LIB).also {
+            it.create("shop", services = listOf("postgres"))
+        }
     }
 
     @Test

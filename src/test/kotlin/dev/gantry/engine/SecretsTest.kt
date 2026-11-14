@@ -92,7 +92,7 @@ class SecretsTest {
     @Test
     fun `a corrupt file is a user-facing error and does not block destroy`() {
         val home = Files.createTempDirectory("gantry-secrets")
-        val engine = Engine(home = home, dockerCommand = NO_DOCKER)
+        val engine = Engine(home = home, dockerCommand = NO_DOCKER, runtimeLib = TEST_RUNTIME_LIB)
         engine.create("shop", services = listOf("postgres"))
         Files.writeString(home.resolve("secrets.json"), "{not json")
         val e = assertFailsWith<GantryException> { engine.secrets.password("shop", "postgres") }

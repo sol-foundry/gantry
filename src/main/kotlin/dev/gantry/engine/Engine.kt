@@ -1,5 +1,6 @@
 package dev.gantry.engine
 
+import dev.gantry.dblog.Certificates
 import dev.gantry.gateway.AUTHORIZERS_CONTEXT
 import dev.gantry.gateway.GATEWAY
 import dev.gantry.gateway.GatewayRuntime
@@ -35,6 +36,7 @@ private const val CONFIG_HASH_BYTES = 8
 
 /** A top-level service in a catalog fragment: two spaces, its name, a colon. */
 private val SERVICE_HEADER = Regex("(?m)^  [a-zA-Z0-9_-]+:\\s*$")
+private val RUNTIME_PLACEHOLDER = Regex("""\{\{\s*runtime\s*}}""")
 private const val LEGACY_CACHE_UI = "redisinsight"
 private val portRegistrySerializer = MapSerializer(String.serializer(), Int.serializer())
 
@@ -49,8 +51,8 @@ class Engine(
     val home: Path = defaultHome(),
     val catalog: Catalog = Catalog.load(),
     val dockerCommand: String = defaultDockerCommand(),
-    /** The jars gantry-auth runs from; null means the installed distribution's `lib/` (tests pass their own). */
-    private val gatewayLib: Path? = null,
+    /** The jars gantry-auth and the query-log proxies run from; null means the installed distribution's `lib/` (tests pass their own). */
+    private val runtimeLib: Path? = null,
 ) {
     val docker = Docker(this)
     val secrets = SecretStore(home)
@@ -166,7 +168,13 @@ class Engine(
         freshData: Boolean = false,
     ): App {
         val app = loadApp(appName)
-        if (freshData) leftoverVolume(appName, service)?.let { docker.removeVolume(it, "$appName-${catalog.resolve(service).id}") }
+        if (freshData) {
+            leftoverVolume(appName, service)?.let {
+                val id = catalog.resolve(service).id
+                docker.removeContainer("$appName-${databaseServiceName(id, true)}")
+                docker.removeVolume(it, "$appName-$id")
+            }
+        }
         return render(withService(app, service, options))
     }
 
@@ -401,15 +409,10 @@ class Engine(
             .toString()
     }
 
-    /**
-     * Placeholder values for one service. The gateway also gets its pushed authorizers (as JSON, for its computed
-     * blocks). With [forRender], the gateway also gets `runtime`: the staged jars its
-     * gantry-auth container mounts (staging copies files, so only rendering asks for it).
-     */
+    /** Placeholder values for one service. The gateway also gets its pushed authorizers (as JSON, for its computed blocks). */
     private fun context(
         app: App,
         state: ServiceState,
-        forRender: Boolean = false,
     ): Context {
         val def = catalog.resolve(state.id)
         val dir = appDir(app.name).toAbsolutePath()
@@ -417,6 +420,7 @@ class Engine(
             mutableMapOf(
                 "app" to app.name,
                 "app_id" to app.name.replace('-', '_'),
+                "service" to state.id,
                 "dir" to dir.toString(),
                 "svc_dir" to dir.resolve("services").resolve(state.id).toString(),
             )
@@ -430,9 +434,6 @@ class Engine(
             context[SET_SECRETS_CONTEXT] = secrets.secretNames(app.name).joinToString("\n")
             // Authorizers whose container still runs with an older env: their routes go to gantry-auth meanwhile.
             context[PENDING_AUTHORIZERS_CONTEXT] = pendingAuthorizers(dir).keys.joinToString("\n")
-        }
-        if (forRender && def.id == GATEWAY) {
-            context["runtime"] = (gatewayLib?.let { GatewayRuntime.stage(home, it) } ?: GatewayRuntime.stage(home)).toString()
         }
         return context
     }
@@ -450,10 +451,14 @@ class Engine(
         val volumes = linkedSetOf<String>()
         for (state in app.services) {
             val def = catalog.resolve(state.id)
-            val context = context(app, state, forRender = true)
+            val context = context(app, state).toMutableMap()
             val serviceDir = Path.of(context.getValue("svc_dir"))
             Resources.copyTree(Resources.directory("catalog").resolve(def.id), serviceDir)
             def.dirs.forEach { Files.createDirectories(dir.resolve(it)) }
+            if (def.id in DATABASE_SERVICES && queryLogOn(context)) Certificates.ensure(dir, app.name)
+            val services = Template.expandComputed(Files.readString(serviceDir.resolve("services.yml")), context)
+            // Staging copies files, so only services that run gantry's own jars (gantry-auth, query-log proxies) ask for it.
+            if (RUNTIME_PLACEHOLDER.containsMatchIn(services)) context["runtime"] = stageRuntime().toString()
             val rendered =
                 def.files.map { (output, template) ->
                     dir.resolve(output) to
@@ -461,7 +466,7 @@ class Engine(
                 }
             val fragment =
                 withConfigHash(
-                    renderTemplate(serviceDir.resolve("services.yml"), context, yamlEscape = true).trimEnd('\n') + "\n",
+                    Template.render(services, context, yamlEscape = true).trimEnd('\n') + "\n",
                     rendered,
                 )
             fragments += fragment
@@ -513,6 +518,8 @@ class Engine(
         }
         return out.toString()
     }
+
+    private fun stageRuntime(): Path = runtimeLib?.let { GatewayRuntime.stage(home, it) } ?: GatewayRuntime.stage(home)
 
     private fun renderTemplate(
         file: Path,

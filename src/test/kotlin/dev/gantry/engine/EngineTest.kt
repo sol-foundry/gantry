@@ -23,7 +23,7 @@ const val NO_DOCKER = "gantry-test-no-docker"
 
 class EngineTest {
     private val home: Path = Files.createTempDirectory("gantry-test")
-    private val engine = Engine(home = home, dockerCommand = NO_DOCKER)
+    private val engine = Engine(home = home, dockerCommand = NO_DOCKER, runtimeLib = TEST_RUNTIME_LIB)
 
     private fun env(app: String) = engine.env(engine.loadApp(app)).toMap()
 
@@ -71,15 +71,18 @@ class EngineTest {
     }
 
     @Test
-    fun `the gateway needs an installed gantry to stage its auth runtime`() {
-        // Tests run from build/classes, where there is no lib directory of jars to mount into gantry-auth.
-        engine.create("shop", services = listOf("valkey"))
-        val before = home.resolve("apps/shop/app.json").readText()
+    fun `the gateway and the query log need an installed gantry to stage their runtime`() {
+        // Tests run from build/classes, where there is no lib directory of jars to mount into gantry-auth or a proxy.
+        val uninstalled = Engine(home = Files.createTempDirectory("gantry-uninstalled"), dockerCommand = NO_DOCKER)
+        uninstalled.create("shop", services = listOf("valkey"))
+        val appJson = uninstalled.appDir("shop").resolve("app.json")
+        val before = appJson.readText()
 
-        val e = assertFailsWith<GantryException> { engine.add("shop", "gateway") }
-
-        assertTrue("installed" in e.message!!, e.message)
-        assertEquals(before, home.resolve("apps/shop/app.json").readText())
+        listOf("gateway", "postgres", "mysql").forEach { service ->
+            val e = assertFailsWith<GantryException> { uninstalled.add("shop", service) }
+            assertTrue("installed" in e.message!!, e.message)
+            assertEquals(before, appJson.readText())
+        }
     }
 
     @Test
@@ -195,6 +198,7 @@ class EngineTest {
             home = Files.createTempDirectory("gantry-requires-test"),
             catalog = Catalog(Catalog.load().all().map { if (it.id == "mysql") it.copy(requires = listOf("valkey")) else it }),
             dockerCommand = NO_DOCKER,
+            runtimeLib = TEST_RUNTIME_LIB,
         )
 
     @Test
@@ -496,7 +500,7 @@ class EngineTest {
             java.nio.file.attribute.PosixFilePermissions
                 .fromString("rwx------"),
         )
-        val withVolume = Engine(home = tools.resolve("home"), dockerCommand = docker.toString())
+        val withVolume = Engine(home = tools.resolve("home"), dockerCommand = docker.toString(), runtimeLib = TEST_RUNTIME_LIB)
         withVolume.create("shop", services = listOf("valkey"))
 
         assertEquals("gantry-shop_postgres-data", withVolume.leftoverVolume("shop", "postgres"))
@@ -546,7 +550,8 @@ class TemplateTest {
 }
 
 class ValkeyPersistenceTest {
-    private val engine = Engine(home = Files.createTempDirectory("gantry-persist-test"), dockerCommand = NO_DOCKER)
+    private val engine =
+        Engine(home = Files.createTempDirectory("gantry-persist-test"), dockerCommand = NO_DOCKER, runtimeLib = TEST_RUNTIME_LIB)
 
     private fun compose(app: String) = engine.appDir(app).resolve("compose.yml").readText()
 

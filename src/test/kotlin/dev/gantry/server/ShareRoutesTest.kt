@@ -39,7 +39,7 @@ class ShareRoutesTest {
         Engine(
             home = Files.createTempDirectory("gantry-share-routes-test"),
             dockerCommand = NO_DOCKER,
-            gatewayLib = Files.createTempDirectory("gantry-lib").also { Files.writeString(it.resolve("gantry.jar"), "jar") },
+            runtimeLib = Files.createTempDirectory("gantry-lib").also { Files.writeString(it.resolve("gantry.jar"), "jar") },
         )
 
     private val noContainers =

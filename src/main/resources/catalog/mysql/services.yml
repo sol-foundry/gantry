@@ -1,6 +1,6 @@
-  mysql:
+{{@query_log_proxy}}
+{{@db_service_name}}
     image: "mysql:{{opt.version}}"
-    container_name: "{{app}}-mysql"
     # Fresh table statistics (row counts, sizes) for the dashboard instead of MySQL's 24h cache.
     command: ["--information_schema_stats_expiry=0"]
     environment:
@@ -8,8 +8,6 @@
       MYSQL_USER: "{{opt.user}}"
       MYSQL_PASSWORD: "{{opt.password}}"
       MYSQL_ROOT_PASSWORD: "{{opt.root_password}}"
-    ports:
-      - "127.0.0.1:{{port.main}}:3306"
     volumes:
       - mysql-data:/var/lib/mysql
       - "{{dir}}/initdb-mysql:/docker-entrypoint-initdb.d:ro"
