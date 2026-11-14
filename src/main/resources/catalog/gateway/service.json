@@ -15,8 +15,8 @@
     }
   },
   "ports": {
-    "main": 8090,
-    "websocket": 8091
+    "main": 7090,
+    "websocket": 7091
   },
   "dirs": [
     "gateway-log",
