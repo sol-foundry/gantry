@@ -186,9 +186,9 @@ class PgSession(
         var failed = false
         var partial = false
 
-        fun run(now: Instant): Run =
+        fun run(): Run =
             current ?: Run(sql, null, budget).also {
-                it.start = next ?: maxOf(at, now)
+                it.start = next ?: startAfter(at)
                 current = it
             }
     }
@@ -200,21 +200,34 @@ class PgSession(
     private val suspended = LinkedHashSet<Run>()
     private var closed = false
 
+    /** When the last statement on this connection finished: the next one cannot have started before it. */
+    private var lastEnd: Instant? = null
+
+    fun fromClient(message: PgMessage) = fromClient(message, Instant.now())
+
+    fun fromServer(message: PgMessage) = fromServer(message, Instant.now())
+
     @Synchronized
-    fun fromClient(message: PgMessage) {
+    internal fun fromClient(
+        message: PgMessage,
+        now: Instant,
+    ) {
         if (closed) return
         try {
-            onClient(message, Instant.now())
+            onClient(message, now)
         } catch (_: Exception) {
             // Malformed or unexpected input: skip the message.
         }
     }
 
     @Synchronized
-    fun fromServer(message: PgMessage) {
+    internal fun fromServer(
+        message: PgMessage,
+        now: Instant,
+    ) {
         if (closed) return
         try {
-            onServer(message, Instant.now())
+            onServer(message, now)
         } catch (_: Exception) {
             // Malformed or unexpected input: skip the message.
         }
@@ -234,7 +247,7 @@ class PgSession(
             queue.clear()
             when (head) {
                 is SimpleP -> {
-                    val unfinished = head.current ?: if (head.results.isEmpty()) head.run(now) else null
+                    val unfinished = head.current ?: if (head.results.isEmpty()) head.run() else null
                     unfinished?.let { run ->
                         run.truncated = true
                         complete(run, null, null, now)
@@ -344,6 +357,7 @@ class PgSession(
                 (queue.firstOrNull() as? ExecuteP)?.let { head ->
                     head.run.portal?.suspended = head.run
                     suspended += head.run
+                    lastEnd = now
                     pop(now)
                 }
             'E' -> error(r, now)
@@ -375,7 +389,7 @@ class PgSession(
                 pop(now)
             }
             is SimpleP ->
-                head.run(now).let {
+                head.run().let {
                     it.columns = columns
                     it.formats = formats.toIntArray()
                 }
@@ -388,7 +402,7 @@ class PgSession(
     private fun active(now: Instant): Run? =
         when (val head = queue.firstOrNull()) {
             is ExecuteP -> head.run
-            is SimpleP -> head.run(now)
+            is SimpleP -> head.run()
             else -> null
         }
 
@@ -398,11 +412,11 @@ class PgSession(
     ) {
         when (val head = queue.firstOrNull()) {
             is ExecuteP -> {
-                pop(now)
                 finish(head.run, tag, null, now)
+                pop(now)
             }
             is SimpleP -> {
-                val run = head.run(now)
+                val run = head.run()
                 head.results += run
                 head.current = null
                 head.next = now
@@ -437,7 +451,7 @@ class PgSession(
         val error = QueryError(code, message)
         val head = queue.firstOrNull()
         if (head is SimpleP) {
-            val run = head.run(now)
+            val run = head.run()
             head.results += run
             head.current = null
             head.failed = true
@@ -452,10 +466,10 @@ class PgSession(
         val run =
             skipped.firstNotNullOfOrNull { (it as? ExecuteP)?.run }
                 ?: skipped.firstNotNullOfOrNull { (it as? ParseP)?.statement }?.let { st ->
-                    Run(st.sql, null).also { it.start = skipped.first().at }
+                    Run(st.sql, null).also { it.start = startAfter(skipped.first().at) }
                 }
         run?.let {
-            if (it.start == null) it.start = skipped.first().at
+            if (it.start == null) it.start = startAfter(skipped.first { p -> p is ExecuteP }.at)
             finish(it, null, error, now)
         }
     }
@@ -470,7 +484,7 @@ class PgSession(
             if (item is Boundary) break
         }
         if (status == 'I') suspended.toList().forEach { finish(it, null, null, now) }
-        onHead(now)
+        onHead()
     }
 
     private fun emitSimple(query: SimpleP) {
@@ -505,6 +519,7 @@ class PgSession(
     ) {
         run.resolveColumns()
         run.completion = Completion(tag, error, now)
+        lastEnd = now
     }
 
     private fun emitRun(run: Run) {
@@ -521,7 +536,7 @@ class PgSession(
             QueryEntry(
                 id = UUID.randomUUID().toString(),
                 time = start.toString(),
-                durationMs = Duration.between(start, done.end).toNanos() / 1_000_000.0,
+                durationMs = maxOf(0L, Duration.between(start, done.end).toNanos()) / 1_000_000.0,
                 service = service,
                 connectionId = connectionId,
                 client = client,
@@ -573,12 +588,12 @@ class PgSession(
     ) {
         queue.addLast(item)
         if (queue.size > MAX_PENDING) queue.removeFirst()
-        if (queue.size == 1) onHead(now)
+        if (queue.size == 1) onHead()
     }
 
     private fun pop(now: Instant) {
         queue.removeFirstOrNull()
-        onHead(now)
+        onHead()
     }
 
     /**
@@ -589,14 +604,19 @@ class PgSession(
         val index = queue.indexOfFirst { it is T || it is ExecuteP || it is Boundary }
         if (index < 0 || queue[index] !is T) return null
         repeat(index) { queue.removeFirst() }
-        return (queue.removeFirst() as T).also { onHead(now) }
+        return (queue.removeFirst() as T).also { onHead() }
     }
 
-    // A pipelined statement starts when the server gets to it: when it was sent, or when the one before it finished.
-    private fun onHead(now: Instant) {
+    /**
+     * A statement starts when it was sent or when the statement before it finished, whichever is later. Not when it
+     * reaches the queue head: pipelined parse and bind acks arrive in the same burst as its results.
+     */
+    private fun startAfter(sent: Instant): Instant = lastEnd?.let { maxOf(sent, it) } ?: sent
+
+    private fun onHead() {
         when (val head = queue.firstOrNull()) {
-            is ExecuteP -> if (head.run.start == null) head.run.start = maxOf(head.at, now)
-            is SimpleP -> if (head.next == null) head.next = maxOf(head.at, now)
+            is ExecuteP -> if (head.run.start == null) head.run.start = startAfter(head.at)
+            is SimpleP -> if (head.next == null) head.next = startAfter(head.at)
             else -> Unit
         }
     }
