@@ -75,6 +75,9 @@ class QueryLogServiceTest {
 
             fun arg(flag: String) = command[command.indexOf(flag) + 1]
             assertContains(command, "dev.gantry.dblog.QueryLogServerKt")
+            assertTrue(command.any { it.startsWith("-Xmx") }, command.toString())
+            assertContains(command, "-XX:+ExitOnOutOfMemoryError")
+            assertEquals("unless-stopped", proxy["restart"])
             assertEquals(id, arg("--dialect"))
             assertEquals("$port", arg("--listen"))
             assertEquals("$id-db:$port", arg("--upstream"))

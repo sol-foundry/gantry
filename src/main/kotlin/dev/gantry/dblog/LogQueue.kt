@@ -1,7 +1,6 @@
 package dev.gantry.dblog
 
 import java.io.Closeable
-import java.io.IOException
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -10,8 +9,9 @@ import kotlin.concurrent.thread
 
 /**
  * Hands [QueryEntry]s to a [QueryLogWriter] on one background thread, so recording never waits on the disk. It holds at most
- * about [maxRowBytes] of row data: an entry that does not fit is still queued, without its columns and rows and marked
- * truncated, so every statement keeps its SQL, parameters, timing and outcome.
+ * about [maxRowBytes] of entry text (SQL, parameters, rows): an entry that does not fit is still queued, without its
+ * columns and rows, its SQL and parameters cut short and marked truncated, so every statement keeps its SQL, parameters,
+ * timing and outcome.
  */
 class LogQueue internal constructor(
     private val append: (QueryEntry) -> Unit,
@@ -28,18 +28,16 @@ class LogQueue internal constructor(
     /** Queues [entry]; never blocks. */
     fun offer(entry: QueryEntry) {
         if (closed.get()) return
-        val size = rowBytes(entry)
-        if (size == 0L) {
-            pending.add(Held(entry, 0))
+        val size = textBytes(entry)
+        if (heldBytes.addAndGet(size) <= maxRowBytes) {
+            pending.add(Held(entry, size))
             return
         }
-        val held = heldBytes.addAndGet(size)
-        if (held <= maxRowBytes) {
-            pending.add(Held(entry, size))
-        } else {
-            heldBytes.addAndGet(-size)
-            pending.add(Held(entry.copy(columns = null, rows = null, truncated = true), 0))
-        }
+        heldBytes.addAndGet(-size)
+        val shrunk = entry.copy(columns = null, rows = null, truncated = true).capped(SHRUNK_SQL_BYTES, SHRUNK_PARAM_BYTES)
+        val shrunkSize = textBytes(shrunk)
+        heldBytes.addAndGet(shrunkSize)
+        pending.add(Held(shrunk, shrunkSize))
     }
 
     /** Writes everything queued so far, then stops the background thread. The writer stays open. */
@@ -56,9 +54,7 @@ class LogQueue internal constructor(
             val held = item as Held
             try {
                 append(held.entry)
-            } catch (e: IOException) {
-                report(e)
-            } catch (e: RuntimeException) {
+            } catch (e: Throwable) {
                 report(e)
             } finally {
                 heldBytes.addAndGet(-held.size)
@@ -66,7 +62,7 @@ class LogQueue internal constructor(
         }
     }
 
-    private fun report(e: Exception) {
+    private fun report(e: Throwable) {
         if (reported.compareAndSet(false, true)) System.err.println("gantry: cannot write the query log: $e")
     }
 
@@ -75,11 +71,17 @@ class LogQueue internal constructor(
         val size: Long,
     )
 
-    private companion object {
-        val STOP = Any()
+    internal companion object {
+        /** What an entry that no longer fits keeps of its SQL and of each parameter. */
+        const val SHRUNK_SQL_BYTES = 4096
+        const val SHRUNK_PARAM_BYTES = 256
 
-        fun rowBytes(entry: QueryEntry): Long =
-            (entry.columns?.sumOf { it.length.toLong() } ?: 0L) +
+        private val STOP = Any()
+
+        private fun textBytes(entry: QueryEntry): Long =
+            entry.sql.length.toLong() +
+                entry.params.sumOf { (it?.length ?: 0).toLong() + 1 } +
+                (entry.columns?.sumOf { it.length.toLong() } ?: 0L) +
                 (entry.rows?.sumOf { row -> row.sumOf { (it?.length ?: 0).toLong() } + row.size } ?: 0L)
     }
 }

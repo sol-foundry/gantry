@@ -2,9 +2,8 @@ package dev.gantry.dblog.postgres
 
 import dev.gantry.dblog.QueryEntry
 import dev.gantry.dblog.QueryError
-import java.nio.ByteBuffer
-import java.nio.CharBuffer
-import java.nio.charset.CodingErrorAction
+import dev.gantry.dblog.capped
+import dev.gantry.dblog.utf8Prefix
 import java.nio.charset.StandardCharsets.UTF_8
 import java.time.Duration
 import java.time.Instant
@@ -127,7 +126,7 @@ class PgSession(
             raw: ByteArray,
         ): String {
             val value = PgValues.decode(type, format, raw, limits.maxBytes)
-            val cut = cut(value, limits.maxBytes)
+            val cut = utf8Prefix(value, limits.maxBytes)
             if (raw.size > limits.maxBytes || cut.length != value.length) truncated = true
             return cut
         }
@@ -526,7 +525,7 @@ class PgSession(
                 truncated = run.truncated,
             )
         try {
-            emit(entry)
+            emit(entry.capped(limits.maxBytes))
         } catch (_: Exception) {
             // The sink's failure must not reach the relay either.
         }
@@ -584,18 +583,6 @@ class PgSession(
             0 -> 0
             1 -> formats[0]
             else -> formats.getOrElse(i) { 0 }
-        }
-
-        fun cut(
-            value: String,
-            maxBytes: Int,
-        ): String {
-            val bytes = value.toByteArray(UTF_8)
-            if (bytes.size <= maxBytes) return value
-            val decoder = UTF_8.newDecoder().onMalformedInput(CodingErrorAction.IGNORE)
-            val out = CharBuffer.allocate(maxBytes)
-            decoder.decode(ByteBuffer.wrap(bytes, 0, maxBytes), out, true)
-            return out.flip().toString()
         }
     }
 }

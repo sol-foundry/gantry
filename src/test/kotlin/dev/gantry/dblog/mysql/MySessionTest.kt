@@ -473,6 +473,17 @@ class MySessionTest {
     }
 
     @Test
+    fun `sql past the byte cap is cut`() {
+        val s = session(limits = Limits(maxRows = 1000, maxBytes = 10))
+        s.client(My.query("insert into t values ('${"x".repeat(100)}')"))
+        s.server(My.ok())
+
+        val e = entries.single()
+        assertEquals("insert int", e.sql)
+        assertTrue(e.truncated)
+    }
+
+    @Test
     fun `a value past the byte cap is cut and so are the rows that no longer fit`() {
         val s = session(limits = Limits(maxRows = 1000, maxBytes = 10))
         s.client(My.query("select s from t"))

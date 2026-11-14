@@ -45,6 +45,8 @@ internal fun queryLogProxy(context: Context): List<String> {
     val args =
         listOf(
             "java",
+            "-Xmx512m",
+            "-XX:+ExitOnOutOfMemoryError",
             "-cp",
             "\"/gantry/lib/*\"",
             "dev.gantry.dblog.QueryLogServerKt",

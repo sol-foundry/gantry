@@ -347,6 +347,18 @@ class PgSessionTest {
     }
 
     @Test
+    fun `sql past the byte cap is cut, simple and extended`() {
+        val s = session(Limits(maxRows = 1000, maxBytes = 10))
+        s.client(Pg.query("select '${"x".repeat(100)}'"))
+        s.server(Pg.commandComplete("SELECT 0"), Pg.ready())
+        s.client(Pg.parse("", "insert into t values ('${"y".repeat(100)}')"), Pg.bind("", ""), Pg.execute(""), Pg.sync())
+        s.server(Pg.parseComplete(), Pg.bindComplete(), Pg.commandComplete("INSERT 0 1"), Pg.ready())
+
+        assertEquals(listOf("select 'xx", "insert int"), entries.map { it.sql })
+        assertTrue(entries.all { it.truncated })
+    }
+
+    @Test
     fun `values past the byte cap are cut`() {
         val s = session(Limits(maxRows = 1000, maxBytes = 10))
         s.client(Pg.query("select v from t"))

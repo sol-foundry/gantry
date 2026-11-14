@@ -2,11 +2,10 @@ package dev.gantry.dblog.mysql
 
 import dev.gantry.dblog.QueryEntry
 import dev.gantry.dblog.QueryError
+import dev.gantry.dblog.capped
 import dev.gantry.dblog.postgres.Limits
+import dev.gantry.dblog.utf8Prefix
 import java.io.ByteArrayOutputStream
-import java.nio.ByteBuffer
-import java.nio.CharBuffer
-import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets.UTF_8
 import java.time.Duration
 import java.time.Instant
@@ -610,7 +609,7 @@ class MySession(
                 truncated = run.truncated,
             )
         try {
-            emit(entry)
+            emit(entry.capped(limits.maxBytes))
         } catch (_: Exception) {
             // The sink's failure must not reach the relay either.
         }
@@ -687,13 +686,8 @@ class MySession(
     /** [value] cut to maxBytes of UTF-8, and whether anything was lost. */
     private fun fit(value: MyValue): Pair<String?, Boolean> {
         val text = value.text ?: return null to value.cut
-        if (text.length.toLong() * 3 <= limits.maxBytes) return text to value.cut
-        val bytes = text.toByteArray(UTF_8)
-        if (bytes.size <= limits.maxBytes) return text to value.cut
-        val decoder = UTF_8.newDecoder().onMalformedInput(CodingErrorAction.IGNORE)
-        val out = CharBuffer.allocate(limits.maxBytes)
-        decoder.decode(ByteBuffer.wrap(bytes, 0, limits.maxBytes), out, true)
-        return out.flip().toString() to true
+        val cut = utf8Prefix(text, limits.maxBytes)
+        return cut to (value.cut || cut.length != text.length)
     }
 
     private companion object {

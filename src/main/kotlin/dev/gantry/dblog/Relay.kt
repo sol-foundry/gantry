@@ -36,7 +36,7 @@ internal object Relay {
     inline fun guarded(block: () -> Unit) {
         try {
             block()
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             // Ignored: the bytes are relayed regardless.
         }
     }

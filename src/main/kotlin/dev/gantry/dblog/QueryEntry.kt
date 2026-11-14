@@ -1,6 +1,10 @@
 package dev.gantry.dblog
 
 import kotlinx.serialization.Serializable
+import java.nio.ByteBuffer
+import java.nio.CharBuffer
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets.UTF_8
 
 /** One statement a database proxy saw: what was asked, how long it took and what came back (rows cut at the configured size). */
 @Serializable
@@ -29,3 +33,28 @@ data class QueryError(
     val code: String,
     val message: String,
 )
+
+/** [value] cut to at most [maxBytes] of UTF-8, never splitting a character. */
+internal fun utf8Prefix(
+    value: String,
+    maxBytes: Int,
+): String {
+    if (value.length.toLong() * 3 <= maxBytes) return value
+    val bytes = value.toByteArray(UTF_8)
+    if (bytes.size <= maxBytes) return value
+    val decoder = UTF_8.newDecoder().onMalformedInput(CodingErrorAction.IGNORE)
+    val out = CharBuffer.allocate(maxBytes)
+    decoder.decode(ByteBuffer.wrap(bytes, 0, maxBytes), out, true)
+    return out.flip().toString()
+}
+
+/** This entry with its SQL and each parameter cut to [maxBytes], marked truncated when anything was cut. */
+internal fun QueryEntry.capped(
+    maxBytes: Int,
+    paramBytes: Int = maxBytes,
+): QueryEntry {
+    val cutSql = utf8Prefix(sql, maxBytes)
+    val cutParams = params.map { it?.let { p -> utf8Prefix(p, paramBytes) } }
+    val changed = cutSql.length != sql.length || cutParams.indices.any { cutParams[it]?.length != params[it]?.length }
+    return if (changed) copy(sql = cutSql, params = cutParams, truncated = true) else this
+}
