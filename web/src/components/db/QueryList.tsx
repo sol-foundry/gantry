@@ -228,6 +228,21 @@ function QueryDetail({ app, service, listed, onClose }: { app: string; service: 
           </DialogDescription>
         </DialogHeader>
 
+        {full.data?.replaySql !== undefined && full.data.params.length > 0 && (
+          <section className="flex min-w-0 flex-col gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="font-heading text-sm font-medium">Replayable SQL</h3>
+              <CopyButton text={full.data.replaySql} />
+            </div>
+            <CodeBlock className="max-h-64">{full.data.replaySql}</CodeBlock>
+            {full.data.replayComplete === false && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                Some values were cut or are missing, so this SQL may not run exactly as logged.
+              </p>
+            )}
+          </section>
+        )}
+
         <section className="flex min-w-0 flex-col gap-2">
           <div className="flex items-center justify-between gap-2">
             <h3 className="font-heading text-sm font-medium">SQL</h3>

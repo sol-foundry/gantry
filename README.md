@@ -232,12 +232,15 @@ database's `main` port, so `gantry env` and your connection settings stay exactl
 
 - In the dashboard, the database page's **Queries** tab lists statements newest first, live. Search matches the SQL
   (so table names too) and the client name; the time filter takes a preset (the last 5m, 15m, 1h, 24h) or a custom
-  from/to window. Click a statement for the full SQL, its parameters and the results table. **Clear** empties the log.
+  from/to window. Click a statement for the full SQL, its parameters and the results table, plus **Replayable SQL**:
+  the statement with its parameter values written in, ready to copy into `psql`, `mysql` or the SQL console (marked
+  when a value was cut). **Clear** empties the log.
 - `gantry db queries my-app [service] [--search TEXT] [--since 15m] [--from T] [--to T] [--limit N] [-f]` prints
   them as a table, oldest first; `-f` keeps printing new ones. The service is needed only when the app has both
   databases. `gantry db clear my-app [service]` empties the log; new statements keep being recorded.
 - Coding agents connected with `gantry mcp install` get a `get_db_queries` tool with search and since filters,
-  so they can see what your app actually ran; passing a statement's `id` returns it with its result rows.
+  so they can see what your app actually ran; passing a statement's `id` returns it with its result rows and its
+  replayable SQL (`replaySql`, with `replayComplete` false when a value was cut).
 - Errors show the database's own code: the SQLSTATE for Postgres (`42P01`), `<errno>/<sqlstate>` for MySQL
   (`1146/42S02`).
 

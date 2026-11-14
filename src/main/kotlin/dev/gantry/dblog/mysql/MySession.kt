@@ -53,6 +53,8 @@ class MySession(
         val params: List<String?>,
         var truncated: Boolean,
         val start: Instant,
+        val paramTypes: List<String?> = emptyList(),
+        val inexact: Boolean = truncated,
     ) {
         var columns: ArrayList<Column>? = null
         val rows = ArrayList<List<String?>>()
@@ -167,7 +169,7 @@ class MySession(
         // Decoded only once the response arrives, so the statement's prepare response has been seen whichever thread ran first.
         override fun newRun(start: Instant): Run {
             val first = resolved ?: resolve(packet, start).also { resolved = it }
-            return if (index == 0) first else Run(first.sql, first.params, first.truncated, start)
+            return if (index == 0) first else Run(first.sql, first.params, first.truncated, start, first.paramTypes, first.inexact)
         }
     }
 
@@ -612,6 +614,7 @@ class MySession(
         val r = MyReader(packet.payload)
         val st = runCatching { r.byte().let { statements[r.int32()] } }.getOrNull() ?: return Run("", emptyList(), packet.cut, start)
         val params = ArrayList<String?>()
+        val paramTypes = ArrayList<String?>()
         var cut = packet.cut || st.cut || st.longDataCut
         try {
             val flags = r.byte()
@@ -634,28 +637,21 @@ class MySession(
                             bit(nulls, i) -> MyValue(null, false)
                             long != null ->
                                 long.toByteArray().let {
-                                    MyValue(
-                                        MyValues.render(
-                                            it,
-                                            MyValues.paramBytes(type),
-                                            limits.maxBytes,
-                                            it.size > limits.maxBytes,
-                                        ),
-                                        it.size > limits.maxBytes,
-                                    )
+                                    MyValues.renderValue(it, MyValues.paramBytes(type), limits.maxBytes, it.size > limits.maxBytes)
                                 }
                             else -> MyValues.readBinary(r, type, types[i] and 0x8000 != 0, MyValues.paramBytes(type), limits.maxBytes)
                         }
                     val (text, valueCut) = fit(value)
                     if (valueCut) cut = true
                     params += text
+                    paramTypes += if (value.hex) "binary" else MyValues.typeName(type, types[i] and 0x8000 != 0)
                 }
             }
         } catch (_: Exception) {
             cut = true
         }
         st.clearLongData()
-        return Run(st.sql, params, cut, start)
+        return Run(st.sql, params, cut, start, paramTypes)
     }
 
     private fun Statement.addLongData(
@@ -698,6 +694,8 @@ class MySession(
                 client = client,
                 sql = run.sql,
                 params = run.params,
+                paramTypes = run.paramTypes,
+                inexact = run.inexact,
                 columns = run.columns?.map { it.name },
                 rows = run.columns?.let { run.rows.toList() },
                 rowCount = run.columns?.let { run.count },

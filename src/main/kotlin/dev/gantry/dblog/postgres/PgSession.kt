@@ -124,11 +124,19 @@ class PgSession(
             type: Int,
             format: Int,
             raw: ByteArray,
-        ): String {
+        ): String = keepCut(type, format, raw).first
+
+        /** [keep], and whether the value was cut. */
+        fun keepCut(
+            type: Int,
+            format: Int,
+            raw: ByteArray,
+        ): Pair<String, Boolean> {
             val value = PgValues.decode(type, format, raw, limits.maxBytes)
-            val cut = utf8Prefix(value, limits.maxBytes)
-            if (raw.size > limits.maxBytes || cut.length != value.length) truncated = true
-            return cut
+            val kept = utf8Prefix(value, limits.maxBytes)
+            val cut = raw.size > limits.maxBytes || kept.length != value.length
+            if (cut) truncated = true
+            return kept to cut
         }
     }
 
@@ -506,6 +514,7 @@ class PgSession(
         val verb = parts.takeWhile { it.toLongOrNull() == null }.joinToString(" ").ifEmpty { null }
         val number = parts.lastOrNull()?.toLongOrNull()
         val returnsRows = verb == "SELECT" || verb == "FETCH" || run.columns != null
+        val params = params(run)
         val entry =
             QueryEntry(
                 id = UUID.randomUUID().toString(),
@@ -515,7 +524,7 @@ class PgSession(
                 connectionId = connectionId,
                 client = client,
                 sql = run.sql,
-                params = params(run),
+                params = params.values,
                 columns = run.columns?.map { it.name },
                 rows = if (run.columns != null || run.count > 0) run.rows.toList() else null,
                 rowCount = if (returnsRows) (if (run.count > 0) run.count else number ?: run.count) else null,
@@ -523,6 +532,8 @@ class PgSession(
                 command = verb,
                 error = done.error,
                 truncated = run.truncated,
+                paramTypes = params.types,
+                inexact = params.inexact,
             )
         try {
             emit(entry.capped(limits.maxBytes))
@@ -531,11 +542,27 @@ class PgSession(
         }
     }
 
-    private fun params(run: Run): List<String?> {
-        val portal = run.portal ?: return emptyList()
-        return portal.params.mapIndexed { i, bytes ->
-            bytes?.let { run.keep(portal.statement.paramTypes.getOrElse(i) { 0 }, formatOf(portal.paramFormats, i), it) }
-        }
+    private class Params(
+        val values: List<String?>,
+        val types: List<String?>,
+        val inexact: Boolean,
+    )
+
+    private fun params(run: Run): Params {
+        val portal = run.portal ?: return Params(emptyList(), emptyList(), false)
+        var inexact = portal.cut
+        val types = portal.statement.paramTypes
+        val values =
+            portal.params.mapIndexed { i, bytes ->
+                bytes?.let {
+                    val type = types.getOrElse(i) { 0 }
+                    val format = formatOf(portal.paramFormats, i)
+                    val (value, cut) = run.keepCut(type, format, it)
+                    if (cut || (type != BYTEA && PgValues.rendersHex(type, format, it))) inexact = true
+                    value
+                }
+            }
+        return Params(values, List(values.size) { PgValues.typeName(types.getOrElse(it) { 0 }) }, inexact)
     }
 
     private fun enqueue(
@@ -574,6 +601,7 @@ class PgSession(
 
     private companion object {
         const val MAX_PENDING = 10_000
+        const val BYTEA = 17
         val AFFECTING_VERBS = setOf("INSERT", "UPDATE", "DELETE", "MERGE", "COPY", "MOVE")
 
         fun formatOf(

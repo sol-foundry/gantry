@@ -158,6 +158,8 @@ class QueryLog(
                     it.command,
                     it.error,
                     it.truncated,
+                    it.paramTypes,
+                    it.inexact,
                 )
             }
         } catch (_: IllegalArgumentException) {
@@ -180,6 +182,8 @@ class QueryLog(
         val command: String?,
         val error: QueryError?,
         val truncated: Boolean,
+        val paramTypes: List<String?> = emptyList(),
+        val inexact: Boolean = false,
     )
 
     private class Head(

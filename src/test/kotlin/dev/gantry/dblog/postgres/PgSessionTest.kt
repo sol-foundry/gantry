@@ -446,6 +446,35 @@ class PgSessionTest {
     }
 
     @Test
+    fun `parameters carry their type names, and an undecodable binary value marks the entry inexact`() {
+        val s = session()
+        s.client(
+            Pg.parse("", "select $1, $2, $3, $4", INT4, TEXT, 0, 17),
+            Pg.bind("", "", Pg.int4(5), "a", "b", byteArrayOf(0xde.toByte(), 0xad.toByte())),
+            Pg.execute(""),
+            Pg.sync(),
+        )
+        s.server(Pg.parseComplete(), Pg.bindComplete(), Pg.commandComplete("SELECT 0"), Pg.ready())
+        s.client(Pg.parse("", "select $1", 1007), Pg.bind("", "", byteArrayOf(0, 0, 0, 1)), Pg.execute(""), Pg.sync())
+        s.server(Pg.parseComplete(), Pg.bindComplete(), Pg.commandComplete("SELECT 0"), Pg.ready())
+
+        val (plain, array) = entries
+        assertEquals(listOf("int4", "text", null, "bytea"), plain.paramTypes)
+        assertEquals(listOf<String?>("5", "a", "b", "\\xdead"), plain.params)
+        assertEquals(false, plain.inexact)
+        assertEquals(listOf<String?>("int4[]"), array.paramTypes)
+        assertTrue(array.inexact)
+    }
+
+    @Test
+    fun `a cut parameter marks the entry inexact`() {
+        val s = session(Limits(maxRows = 1000, maxBytes = 10))
+        s.client(Pg.parse("", "select $1", TEXT), Pg.bind("", "", "x".repeat(50)), Pg.execute(""), Pg.sync())
+        s.server(Pg.parseComplete(), Pg.bindComplete(), Pg.commandComplete("SELECT 0"), Pg.ready())
+        assertTrue(entries.single().inexact)
+    }
+
+    @Test
     fun `a bind cut at the frame cap keeps the parameters that fit`() {
         val s = session()
         val full = Pg.bind("", "S_1", "small", "x".repeat(100)).payload

@@ -6,10 +6,11 @@ import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets.UTF_8
 
-/** A decoded value: its [text] (null for SQL NULL) and whether the bytes behind it were [cut]. */
+/** A decoded value: its [text] (null for SQL NULL), whether the bytes behind it were [cut], and whether it shows as [hex]. */
 internal class MyValue(
     val text: String?,
     val cut: Boolean,
+    val hex: Boolean = false,
 )
 
 /**
@@ -71,7 +72,7 @@ internal object MyValues {
     ): MyValue {
         val n = r.lenenc()
         if (n < 0) return MyValue(null, false)
-        return MyValue(render(r.slice(n, keep(maxBytes)), bytes, maxBytes, n > maxBytes), n > maxBytes)
+        return renderValue(r.slice(n, keep(maxBytes)), bytes, maxBytes, n > maxBytes)
     }
 
     /** One binary-protocol value of [type]. */
@@ -97,7 +98,7 @@ internal object MyValues {
                 else -> {
                     val n = r.lenenc()
                     if (n < 0) return MyValue(null, false)
-                    return MyValue(render(r.slice(n, keep(maxBytes)), bytes, maxBytes, n > maxBytes), n > maxBytes)
+                    return renderValue(r.slice(n, keep(maxBytes)), bytes, maxBytes, n > maxBytes)
                 }
             }
         return MyValue(text, false)
@@ -111,17 +112,53 @@ internal object MyValues {
         readBinary(r, type, unsigned = false, bytes = Bytes.HEX, maxBytes = 0)
     }
 
-    fun render(
+    fun renderValue(
         raw: ByteArray,
         bytes: Bytes,
         maxBytes: Int,
         cut: Boolean,
-    ): String =
-        when (bytes) {
-            Bytes.HEX -> hex(raw, maxBytes, cut)
-            Bytes.TEXT -> text(raw, maxBytes)
-            Bytes.TEXT_OR_HEX -> strictText(raw, maxBytes, cut) ?: hex(raw, maxBytes, cut)
-        }
+    ): MyValue {
+        val text =
+            when (bytes) {
+                Bytes.TEXT -> text(raw, maxBytes)
+                Bytes.TEXT_OR_HEX -> strictText(raw, maxBytes, cut)
+                Bytes.HEX -> null
+            }
+        return if (text != null) MyValue(text, cut) else MyValue(hex(raw, maxBytes, cut), cut, hex = true)
+    }
+
+    /** The SQL name of a parameter's [type], as the client declared it. */
+    fun typeName(
+        type: Int,
+        unsigned: Boolean,
+    ): String? {
+        val name =
+            when (type) {
+                DECIMAL, 0xF6 -> "decimal"
+                TINY -> "tinyint"
+                SHORT -> "smallint"
+                LONG -> "int"
+                INT24 -> "mediumint"
+                LONGLONG -> "bigint"
+                FLOAT -> "float"
+                DOUBLE -> "double"
+                YEAR -> "year"
+                TIMESTAMP -> "timestamp"
+                DATE, NEWDATE -> "date"
+                TIME -> "time"
+                DATETIME -> "datetime"
+                BIT -> "bit"
+                GEOMETRY -> "geometry"
+                0xF5 -> "json"
+                0xF7 -> "enum"
+                0xF8 -> "set"
+                in blobs -> "blob"
+                0x0F, 0xFD -> "varchar"
+                0xFE -> "char"
+                else -> return null
+            }
+        return if (unsigned && type in setOf(TINY, SHORT, LONG, INT24, LONGLONG)) "$name unsigned" else name
+    }
 
     private fun keep(maxBytes: Int) = if (maxBytes == Int.MAX_VALUE) Int.MAX_VALUE else maxBytes + 1
 

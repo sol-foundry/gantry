@@ -6,9 +6,11 @@ import dev.gantry.db.Migrations
 import dev.gantry.db.RowEdit
 import dev.gantry.db.RowsDelete
 import dev.gantry.db.Sync
+import dev.gantry.dblog.dialectOfService
 import dev.gantry.dblog.parseQueryTime
 import dev.gantry.dblog.queryLog
 import dev.gantry.dblog.queryLoggedDatabases
+import dev.gantry.dblog.withReplay
 import dev.gantry.engine.App
 import dev.gantry.engine.Engine
 import dev.gantry.engine.EnvEntry
@@ -235,7 +237,11 @@ private fun Route.apiRoutes(
             get("/{id}") {
                 val service = dbService(engine) ?: return@get
                 val found = blocking { engine.queryLog(app(), service).get(call.parameters.getOrFail("id")) }
-                if (found == null) call.respond(HttpStatusCode.NotFound, ErrorBody("no such query")) else call.respond(found)
+                if (found == null) {
+                    call.respond(HttpStatusCode.NotFound, ErrorBody("no such query"))
+                } else {
+                    call.respond(found.withReplay(apiJson, dialectOfService(service)))
+                }
             }
         }
 

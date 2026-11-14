@@ -25,6 +25,13 @@ data class QueryEntry(
     val error: QueryError?,
     /** True when rows or a value were cut at the configured size. */
     val truncated: Boolean,
+    /**
+     * Each parameter's type when known: a Postgres type name, a MySQL type, or MySQL `binary` for a value shown as the
+     * hex of its bytes.
+     */
+    val paramTypes: List<String?> = emptyList(),
+    /** True when the SQL or a parameter was cut, a parameter is missing, or one is only the hex of its wire encoding. */
+    val inexact: Boolean = false,
 )
 
 /** The database's error for a statement: its SQLSTATE or error number as [code]. */
@@ -56,5 +63,5 @@ internal fun QueryEntry.capped(
     val cutSql = utf8Prefix(sql, maxBytes)
     val cutParams = params.map { it?.let { p -> utf8Prefix(p, paramBytes) } }
     val changed = cutSql.length != sql.length || cutParams.indices.any { cutParams[it]?.length != params[it]?.length }
-    return if (changed) copy(sql = cutSql, params = cutParams, truncated = true) else this
+    return if (changed) copy(sql = cutSql, params = cutParams, truncated = true, inexact = true) else this
 }

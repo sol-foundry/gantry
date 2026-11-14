@@ -343,6 +343,16 @@ class McpServerTest {
                 .jsonPrimitive.content.length,
         )
         assertEquals("true", one.at("truncated").jsonPrimitive.content)
+        assertEquals("select big", one.at("replaySql").jsonPrimitive.content)
+        assertEquals("false", one.at("replayComplete").jsonPrimitive.content)
+        assertEquals(
+            "select 1",
+            entries("""{"id":"one"}""")
+                .single()
+                .at("replaySql")
+                .jsonPrimitive.content,
+        )
+        assertEquals(null, all[0].jsonObject["replaySql"])
         assertEquals(0, entries("""{"id":"missing"}""").size)
 
         assertEquals(listOf("one"), entries("""{"service":"postgres","search":"select 1"}""").map { it.at("id").jsonPrimitive.content })

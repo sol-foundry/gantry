@@ -530,4 +530,12 @@ export interface DbQuery {
   error: DbQueryError | null;
   /** Rows or a value were cut at the configured size. */
   truncated: boolean;
+  /** Each parameter's type when known. */
+  paramTypes?: (string | null)[];
+  /** The SQL or a parameter was cut, a parameter is missing, or one is only hex of its wire encoding. */
+  inexact?: boolean;
+  /** Detail only: the SQL with its parameter values written in, ready to run. */
+  replaySql?: string;
+  /** Detail only: false when the replay is missing or has cut values. */
+  replayComplete?: boolean;
 }

@@ -514,6 +514,35 @@ class MySessionTest {
     }
 
     @Test
+    fun `parameters carry their types, bytes that are not text show as binary`() {
+        val s = session()
+        s.client(My.prepare("insert into t values (?, ?, ?)"))
+        s.server(
+            My.prepareOk(id = 1, columns = 0, params = 3),
+            My.column("?", My.T_LONGLONG),
+            My.column("?", My.T_BLOB),
+            My.column("?", My.T_BLOB),
+            My.eof(),
+        )
+        s.client(
+            My.execute(
+                1,
+                listOf(
+                    My.T_LONGLONG to My.int8(-1),
+                    My.T_BLOB to My.bin(byteArrayOf(0xff.toByte(), 0)),
+                    My.T_BLOB to My.str("text"),
+                ),
+            ),
+        )
+        s.server(My.ok())
+
+        val e = entries.single()
+        assertEquals(listOf<String?>("bigint", "binary", "blob"), e.paramTypes)
+        assertEquals(listOf<String?>("-1", "\\xff00", "text"), e.params)
+        assertEquals(false, e.inexact)
+    }
+
+    @Test
     fun `a command sent before the server finishes authentication is still logged`() {
         val s = MySession("mysql", 1, Limits(1000, 1000)) { entries += it }
         s.server(My.greeting(My.BASE))

@@ -1,9 +1,11 @@
 package dev.gantry.mcp
 
 import dev.gantry.dblog.QueryEntry
+import dev.gantry.dblog.dialectOfService
 import dev.gantry.dblog.parseQueryTime
 import dev.gantry.dblog.queryLog
 import dev.gantry.dblog.queryLoggedDatabases
+import dev.gantry.dblog.withReplay
 import dev.gantry.engine.Engine
 import dev.gantry.engine.GantryException
 import dev.gantry.gateway.Call
@@ -206,13 +208,14 @@ class McpServer(
             val since = arguments?.text("since")?.ifBlank { null }?.let { parseQueryTime(it) }
             val log = engine.queryLog(app, name)
             val id = arguments?.text("id")?.ifBlank { null }
-            val entries =
+            val text =
                 if (id != null) {
-                    listOfNotNull(log.get(id))
+                    val entries = listOfNotNull(log.get(id)).map { it.cutForAgent().withReplay(Json, dialectOfService(name)) }
+                    Json.encodeToString(entries)
                 } else {
-                    log.recent(limit, arguments?.text("search")?.ifBlank { null }, since)
-                }.map { it.cutForAgent() }
-            buildJsonObject { put("content", buildJsonArray { add(textContent(Json.encodeToString(entries))) }) }
+                    Json.encodeToString(log.recent(limit, arguments?.text("search")?.ifBlank { null }, since).map { it.cutForAgent() })
+                }
+            buildJsonObject { put("content", buildJsonArray { add(textContent(text)) }) }
         } catch (e: GantryException) {
             toolError(e.message ?: "error")
         }
@@ -229,8 +232,9 @@ class McpServer(
                 value
             }
         val cells = rows?.take(QUERY_ROWS)?.map { row -> row.map(::short) }
+        val paramsCut = params.any { it != null && it.length > QUERY_VALUE_CHARS }
         val shortParams = params.map(::short)
-        return copy(rows = cells, params = shortParams, truncated = truncated || cut)
+        return copy(rows = cells, params = shortParams, truncated = truncated || cut, inexact = inexact || paramsCut)
     }
 
     private fun gatewayCallsDefinition() =

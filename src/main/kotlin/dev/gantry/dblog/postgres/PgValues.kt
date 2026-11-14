@@ -42,6 +42,73 @@ object PgValues {
         return runCatching { binary(typeOid, bytes) }.getOrNull() ?: hex(bytes)
     }
 
+    private val typeNames =
+        mapOf(
+            16 to "bool",
+            17 to "bytea",
+            18 to "\"char\"",
+            19 to "name",
+            20 to "int8",
+            21 to "int2",
+            23 to "int4",
+            25 to "text",
+            26 to "oid",
+            114 to "json",
+            142 to "xml",
+            650 to "cidr",
+            700 to "float4",
+            701 to "float8",
+            829 to "macaddr",
+            869 to "inet",
+            1042 to "bpchar",
+            1043 to "varchar",
+            1082 to "date",
+            1083 to "time",
+            1114 to "timestamp",
+            1184 to "timestamptz",
+            1186 to "interval",
+            1266 to "timetz",
+            1560 to "bit",
+            1562 to "varbit",
+            1700 to "numeric",
+            2950 to "uuid",
+            3614 to "tsvector",
+            3615 to "tsquery",
+            3802 to "jsonb",
+            199 to "json[]",
+            1000 to "bool[]",
+            1001 to "bytea[]",
+            1005 to "int2[]",
+            1007 to "int4[]",
+            1009 to "text[]",
+            1014 to "bpchar[]",
+            1015 to "varchar[]",
+            1016 to "int8[]",
+            1021 to "float4[]",
+            1022 to "float8[]",
+            1028 to "oid[]",
+            1115 to "timestamp[]",
+            1182 to "date[]",
+            1185 to "timestamptz[]",
+            1231 to "numeric[]",
+            2951 to "uuid[]",
+            3807 to "jsonb[]",
+        )
+
+    /** The SQL name of [typeOid] for a cast, or null when it is unspecified or not a common built-in type. */
+    fun typeName(typeOid: Int): String? = typeNames[typeOid]
+
+    /** Whether [decode] shows these bytes as hex of their binary encoding rather than as a value. */
+    fun rendersHex(
+        typeOid: Int,
+        format: Int,
+        bytes: ByteArray,
+    ): Boolean =
+        format != 0 &&
+            typeOid !in textTypes &&
+            !(typeOid == JSONB && bytes.firstOrNull()?.toInt() == 1) &&
+            runCatching { binary(typeOid, bytes) }.getOrNull() == null
+
     fun hex(
         bytes: ByteArray,
         count: Int = bytes.size,

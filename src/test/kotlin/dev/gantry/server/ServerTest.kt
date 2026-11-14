@@ -177,6 +177,10 @@ class ServerTest {
             gantry.create("shop", services = listOf("postgres"))
             val file = gantry.appDir("shop").resolve("db-log").resolve("postgres.jsonl")
             QueryLogWriter(file, 1_000_000).use { w ->
+                w.append(
+                    queryEntry("e", "2026-11-14T08:00:00Z", "select * from users where id = $1 and name = $2")
+                        .copy(params = listOf("7", "O'Neil"), paramTypes = listOf("int4", "text")),
+                )
                 w.append(queryEntry("a", "2026-11-14T10:00:00Z", "select * from users"))
                 w.append(queryEntry("b", "2026-11-14T10:01:00Z", "update orders set x = 1"))
                 w.append(queryEntry("c", "2026-11-14T10:02:00Z", "select * from users where id = 1"))
@@ -205,6 +209,10 @@ class ServerTest {
             assertContains(client.get("$base/d").bodyAsText(), "\"rows\":[[\"cell\"]]")
 
             assertContains(client.get("$base/a").bodyAsText(), "\"id\":\"a\"")
+            assertContains(client.get("$base/a").bodyAsText(), "\"replaySql\":\"select * from users\"")
+            val detail = client.get("$base/e").bodyAsText()
+            assertContains(detail, "\"replaySql\":\"select * from users where id = 7 and name = 'O''Neil'::text\"")
+            assertContains(detail, "\"replayComplete\":true")
             assertEquals(HttpStatusCode.NotFound, client.get("$base/nope").status)
 
             assertEquals(HttpStatusCode.OK, client.delete(base).status)
