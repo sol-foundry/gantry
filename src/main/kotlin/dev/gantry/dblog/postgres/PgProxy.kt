@@ -1,20 +1,17 @@
 package dev.gantry.dblog.postgres
 
 import dev.gantry.dblog.LogQueue
+import dev.gantry.dblog.Relay
 import dev.gantry.dblog.TlsFiles
 import java.io.DataInputStream
 import java.io.IOException
 import java.io.InputStream
-import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.nio.file.Files
-import java.security.KeyStore
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
-import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
 import kotlin.concurrent.thread
@@ -35,7 +32,7 @@ class PgProxy(
     private val listenHost: String = "0.0.0.0",
     private val newServerSocket: () -> ServerSocket = ::ServerSocket,
 ) {
-    private val ssl: SSLContext? = tls?.let(::sslContext)
+    private val ssl: SSLContext? = tls?.let(Relay::serverContext)
     private val ids = AtomicLong()
     private val acceptReported = AtomicBoolean()
     private val connections = ConcurrentHashMap.newKeySet<Connection>()
@@ -156,13 +153,13 @@ class PgProxy(
             val session = PgSession(service, id, limits, queue::offer)
             val clientFrames = PgFrameReader(startupPhase = true)
             val serverFrames = PgFrameReader(startupPhase = false)
-            guarded { clientFrames.feed(startup).forEach(session::fromClient) }
+            Relay.guarded { clientFrames.feed(startup).forEach(session::fromClient) }
             db.getOutputStream().write(startup)
 
             val back =
                 thread(isDaemon = true, name = "pgproxy-$id-server") {
                     try {
-                        pump(db.getInputStream(), client.getOutputStream(), observeFirst = false) { b, n ->
+                        Relay.pump(db.getInputStream(), client.getOutputStream(), observeFirst = false) { b, n ->
                             serverFrames.feed(b, 0, n).forEach(session::fromServer)
                         }
                     } finally {
@@ -171,13 +168,13 @@ class PgProxy(
                 }
             try {
                 // Client frames are observed before they go upstream, so a fast reply always finds its request queued.
-                pump(client.getInputStream(), db.getOutputStream(), observeFirst = true) { b, n ->
+                Relay.pump(client.getInputStream(), db.getOutputStream(), observeFirst = true) { b, n ->
                     clientFrames.feed(b, 0, n).forEach(session::fromClient)
                 }
             } finally {
                 closeSockets()
                 back.join(JOIN_MS)
-                guarded { session.close() }
+                Relay.guarded { session.close() }
             }
         }
 
@@ -227,37 +224,6 @@ class PgProxy(
             }
         }
 
-        /** Copies [input] to [output] until either ends, handing each chunk to [observe] before or after it is sent. */
-        fun pump(
-            input: InputStream,
-            output: OutputStream,
-            observeFirst: Boolean,
-            observe: (ByteArray, Int) -> Unit,
-        ) {
-            val buffer = ByteArray(64 * 1024)
-            try {
-                while (true) {
-                    val n = input.read(buffer)
-                    if (n < 0) return
-                    if (observeFirst) guarded { observe(buffer, n) }
-                    output.write(buffer, 0, n)
-                    output.flush()
-                    if (!observeFirst) guarded { observe(buffer, n) }
-                }
-            } catch (_: IOException) {
-                // Either side closed.
-            }
-        }
-
-        /** Recording must never break the relay. */
-        inline fun guarded(block: () -> Unit) {
-            try {
-                block()
-            } catch (_: Exception) {
-                // Ignored: the bytes are relayed regardless.
-            }
-        }
-
         fun fatal(message: String): ByteArray =
             PgFrames.encode(
                 PgMessage(
@@ -275,12 +241,5 @@ class PgProxy(
                         .toByteArray(),
                 ),
             )
-
-        fun sslContext(tls: TlsFiles): SSLContext {
-            val password = tls.password.toCharArray()
-            val store = KeyStore.getInstance("PKCS12").apply { Files.newInputStream(tls.keyStore).use { load(it, password) } }
-            val keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply { init(store, password) }
-            return SSLContext.getInstance("TLS").apply { init(keys.keyManagers, null, null) }
-        }
     }
 }
