@@ -1,0 +1,10 @@
+#!/bin/sh
+# Prints the lines of a commit message (on stdin) that credit an AI tool, numbered; prints nothing when clean.
+# Matches by shape, not by product: a Co-Authored-By trailer with a noreply@ or [bot] address (people's GitHub
+# noreply addresses look like 123+name@users.noreply.github.com and pass), any *-Session: trailer, and lines
+# that start with "Generated with [...]" or a robot emoji. Comment lines and the `git commit -v` diff are skipped.
+sed '/^# -\{24\} >8 -\{24\}$/,$d' |
+  grep -n '' |
+  grep -v '^[0-9]*:#' |
+  grep -iE '^[0-9]+:(co-authored-by:.*<(noreply@[^>]*|[^>]*\[bot\][^>]*)>|[a-z-]+-session:|(🤖 *)?generated with \[|🤖)'
+exit 0

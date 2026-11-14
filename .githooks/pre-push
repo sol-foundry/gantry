@@ -1,0 +1,25 @@
+#!/bin/sh
+# Refuses to push commits whose messages credit an AI tool. Catches what commit-msg can't see: commits made by
+# rebase, cherry-pick or --no-verify.
+check="$(dirname "$0")/attribution-lines"
+zero=0000000000000000000000000000000000000000
+remote="$1"
+bad=""
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue # deleting a ref
+  case "$local_ref" in refs/tags/*) local_sha=$(git rev-parse "$local_sha^{commit}" 2>/dev/null) || continue ;; esac
+  if [ "$remote_sha" = "$zero" ] || ! git cat-file -e "$remote_sha" 2>/dev/null; then
+    commits=$(git rev-list "$local_sha" --not --remotes="$remote") # new ref: only what the remote lacks
+  else
+    commits=$(git rev-list "$remote_sha..$local_sha")
+  fi
+  for c in $commits; do
+    [ -n "$(git log -1 --format=%B "$c" | "$check")" ] && bad="$bad$(git log -1 --format='%h %s' "$c")
+"
+  done
+done
+if [ -n "$bad" ]; then
+  echo "pre-push: these commits carry AI attribution in their messages; reword them before pushing:" >&2
+  printf '%s' "$bad" | sed 's/^/  /' >&2
+  exit 1
+fi

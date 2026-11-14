@@ -23,6 +23,17 @@ rather than `./gradlew run` when trying `gantry mcp install`: agent entries poin
 cd web && npm run dev       # UI hot reload on :5173; run `gantry dashboard` alongside it
 ```
 
+Turn on the repo's git hooks once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+They reject commit messages that credit an AI tool (a `Co-Authored-By` trailer with a `noreply@` or `[bot]`
+address, a `*-Session:` trailer, a "Generated with [...]" line): `commit-msg` when you commit, and `pre-push` for
+commits made by rebase, cherry-pick or `--no-verify`. With extra worktrees, use the absolute path of one checkout's
+`.githooks`, since a relative path resolves inside each worktree.
+
 Under `npm run dev` the dashboard also shows the [Agentation](https://agentation.com) toolbar (bottom-right): click
 elements to annotate them and copy the notes for a coding agent. It is a dev dependency and never ships in the
 built dashboard.
