@@ -5,8 +5,8 @@
 class Gantry < Formula
   desc "Per-app local infrastructure (databases, queues, caches) in Docker"
   homepage "https://github.com/sol-foundry/gantry"
-  url "https://github.com/sol-foundry/gantry/releases/download/v0.3.0/gantry-0.3.0.tar.gz"
-  sha256 "bf0725459efe3a5d6ac8cab0b84aceb4950842d86bf5745d7dcbcd1434b4b147"
+  url "https://github.com/sol-foundry/gantry/releases/download/v0.4.0/gantry-0.4.0.tar.gz"
+  sha256 "ff2a9223ef94163fa5e030f4e946df6fc6c159161e5e30f7005a0cc25dbf5ae8"
   license "Apache-2.0"
 
   depends_on "openjdk"
