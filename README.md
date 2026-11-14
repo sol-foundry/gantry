@@ -123,14 +123,15 @@ cache, Temporal and Kafka open their own UI in a new tab) and the
   the env block on the right (copy it, or rename variables to what your code reads). Start/Stop/Destroy on top;
   Start is disabled while every service runs. In a running app, adding, reconfiguring or removing a service in
   the dashboard applies at once (the CLI's `gantry add`/`remove` still wait for `gantry start`).
-- **Database pages** — the breadcrumb shows the database name; **Sync from source** sits at the top right.
+- **Database pages** — the breadcrumb shows the database name; **Sync from source** sits at the top right. The
+  **Queries** tab shows what your app ran against the database (see [Query log](#query-log)).
 - Light, dark or system theme from the sidebar footer.
 
 Per service:
 
 | Service | Dashboard |
 |---|---|
-| postgres, mysql | built-in database browser (below), Flyway migrations, SQL console |
+| postgres, mysql | built-in database browser (below), Flyway migrations, SQL console, query log |
 | valkey | RedisInsight, started with the cache and pre-connected to it; **Open UI** on the app page |
 | elasticmq | built-in queue explorer: depth, peek, send, purge (see note below) |
 | temporal | links to the Temporal Web UI |
@@ -167,12 +168,12 @@ can run SQL and manage containers.
 
 | Name | What it runs | Options (`--set key=value`) |
 |---|---|---|
-| `postgres` | PostgreSQL | `version`, `name`, `user`, `password` (generated), `migrations`, `migrate_on_up` |
+| `postgres` | PostgreSQL | `version`, `name`, `user`, `password` (generated), `migrations`, `migrate_on_up`, `query_log*` |
 | `valkey` | Valkey, Redis-compatible, plus RedisInsight as its UI | `version`, `maxmemory`, `persist` |
 | `elasticmq` | SQS-compatible queue | `queues`, `max_receive_count` |
 | `temporal` | Temporal dev server | `version`, `search_attributes` |
 | `kafka` | Apache Kafka (single KRaft broker), plus Kafka UI | `version`, `topics`, `partitions` |
-| `mysql` | MySQL | `version`, `name`, `user`, `password`, `root_password` (generated), `migrations`, `migrate_on_up` |
+| `mysql` | MySQL | `version`, `name`, `user`, `password`, `root_password` (generated), `migrations`, `migrate_on_up`, `query_log*` |
 | `gateway` | API gateway for REST (Apache APISIX) and WebSocket on one port, with login checks; see [API gateway](#api-gateway) | `version`, `upstream`, `node_version` |
 | `dynamodb` | Amazon DynamoDB Local, plus DynamoDB Admin as its UI | `version`, `tables`, `persist` |
 
@@ -197,6 +198,7 @@ can run SQL and manage containers.
 - `gantry remove` keeps a database's data volume. Adding that database back asks what to do with it:
   `--fresh-data` deletes it so the database starts empty with its new credentials, `--keep-data` reuses it (set
   `user` and `password` to the old ones). The dashboard's **Add service** shows the same choice.
+- `query_log*` — see [Query log](#query-log).
 - Seed files: put `*.sql` / `*.sh` in `~/.gantry/apps/<app>/initdb/` (Postgres) or `initdb-mysql/` (MySQL). They
   run on a fresh volume only. For schema that evolves, prefer migrations.
 
@@ -220,6 +222,49 @@ and the dashboard's **Start** apply pending migrations after the containers are 
 
 If seed files already created objects, the first `migrate` records a version-0 baseline and then applies every
 migration from V1, rather than refusing the non-empty schema.
+
+## Query log
+
+Every statement your app sends to Postgres or MySQL is recorded with what the database answered: the SQL, its
+parameter values, when it ran and how long it took, and the returned rows, the number of rows changed, or the
+error. It works for any app in any language, with no change to it: a small proxy, part of Gantry, sits on the
+database's `main` port, so `gantry env` and your connection settings stay exactly as they are.
+
+- In the dashboard, the database page's **Queries** tab lists statements newest first, live. Search matches the SQL
+  (so table names too) and the client name; the time filter takes a preset (the last 5m, 15m, 1h, 24h) or a custom
+  from/to window. Click a statement for the full SQL, its parameters and the results table. **Clear** empties the log.
+- `gantry db queries my-app [service] [--search TEXT] [--since 15m] [--from T] [--to T] [--limit N] [-f]` prints
+  them as a table, oldest first; `-f` keeps printing new ones. The service is needed only when the app has both
+  databases. `gantry db clear my-app [service]` empties the log; new statements keep being recorded.
+- Coding agents connected with `gantry mcp install` get a `get_db_queries` tool with the same search and time
+  filter, so they can see what your app actually ran and got back.
+
+Everything is recorded as is, nothing redacted: background traffic (schedulers, pool checks, migrations your app
+runs) and the queries agents run with `psql` or `mysql` show up beside your app's own, told apart by the client
+name (Postgres `application_name`, MySQL's `program_name` attribute). Gantry's own access (the SQL console, the
+database browser, `gantry sync`, `gantry migrate`) goes to the database directly on its `direct` port, published on
+`127.0.0.1`, and is not recorded. Point your own tools there too when you don't want them in the log.
+
+**TLS.** Apps that require TLS, as they do against RDS, connect unchanged: the proxy accepts Postgres
+`sslmode=require` and MySQL `sslMode=REQUIRED` with a certificate Gantry generates per app, and plaintext
+connections keep working. Modes that verify the certificate (`verify-ca`, `verify-full`, `VERIFY_CA`,
+`VERIFY_IDENTITY`) are not supported locally; use `require`. Prepared statements, query cancellation and timeouts,
+`COPY`, `LISTEN`/`NOTIFY`, cursors and transactions work through the proxy as they do without it.
+
+Options (per database, `--set key=value`):
+
+| Option | Default | What it does |
+|---|---|---|
+| `query_log` | `true` | `false` runs no proxy: the database sits on `main` itself and nothing is recorded |
+| `query_log_max_rows` | `1000` | result rows kept per statement; past it the first rows are kept with the total count |
+| `query_log_max_bytes` | `1048576` (1 MB) | result data kept per statement; values or rows past it are cut and marked |
+| `query_log_max_size` | `209715200` (200 MB) | size of the whole log per database; past it the oldest entries go first |
+
+The log lives in the app's `db-log/<service>.jsonl` and survives restarts until trimmed or cleared. Recording never
+holds your app up: if the proxy falls behind, it drops result rows first, and every statement keeps at least its SQL,
+parameters, timing and outcome. Turning `query_log` on or off keeps the data: the next `gantry start` stops the
+database, then brings it back under its new name (`<service>-db` behind the proxy) on the same volume. Other
+containers in the app reach the database through the proxy as `postgres` / `mysql`, like the app does.
 
 ## Data persistence
 
@@ -616,11 +661,12 @@ gantry mcp status                # which apps this repo's agents are connected t
 gantry mcp uninstall my-app      # remove exactly what install added
 ```
 
-Each agent gets an MCP server (`gantry mcp serve my-app`, started by the agent) with one read-only tool,
+Each agent gets an MCP server (`gantry mcp serve my-app`, started by the agent) with a read-only tool,
 `get_connection_details`. It returns every service's state, host, ports and env variables (under your `envmap`
 names), the queues with their dead-letter queues, and Kafka topics, read live each time, so ports, new services and
 renamed variables are always current. The agent then connects with its own tools (`psql`, `aws`, `redis-cli`, ...).
-Sync sources (stage credentials) are never shared.
+Sync sources (stage credentials) are never shared. An app with a gateway also gets `get_gateway_calls` (see
+[Call log](#call-log)), and one with a Postgres or MySQL query log `get_db_queries` (see [Query log](#query-log)).
 
 The setup is personal to your machine and is never committed:
 
@@ -661,6 +707,8 @@ gantry export <app> [-o FILE]
 gantry import <file> [--as NAME] [--set service.option=v ...] [--source service.field=v ...] [--repo NAME=PATH] [-y]
 gantry sync <app> [--service postgres|mysql] [--table T ...] [--source field=v ...] [-y]   replaces local data (or just tables T) with the source's
 gantry destroy <app> [-y]                      deletes data volumes
+gantry db queries <app> [service] [--search TEXT] [--since WHEN] [--from T] [--to T] [--limit N] [-f]
+gantry db clear <app> [service]                empties the query log
 gantry gateway calls <app> [--limit N] [--status 4xx|404] [--path GLOB] [-f]
 gantry gateway clear <app>                     empties the call log
 gantry gateway sockets <app> [--limit N]       open WebSocket connections and recent socket events

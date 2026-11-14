@@ -103,6 +103,7 @@ src/main/kotlin/dev/gantry/
   server/     dashboard JSON API (Ktor), queue explorer
   mcp/        agent access: stdio MCP server, connection details, per-agent config
   gateway/    API gateway: gateway.yml model, APISIX renderer, call log, WebSocket relay client, custom authorizers
+  dblog/      database query log: Postgres and MySQL proxies, log writer and reader
   auth/       gantry-auth, the gateway's token verifier (runs in a container)
 src/main/resources/
   catalog/    one directory per service (service.json + services.yml)
@@ -183,6 +184,28 @@ GANTRY_E2E=1 ./gradlew test -PskipWeb --tests 'dev.gantry.gateway.GatewayEndToEn
 With `GANTRY_E2E=1` the test task runs `installDist` first, since gantry-auth runs from the installed jars. The test
 makes a throwaway app under `build/gateway-e2e/` on free ports, with a small Python upstream next to it, and removes
 the app, its containers and network and the authorizer image it built when it finishes. It takes about a minute.
+
+## Database query log
+
+The query-log proxy (`dblog/`) runs `dev.gantry.dblog.QueryLogServerKt` in a stock JRE container per Postgres or
+MySQL service, from the same staged jars as gantry-auth, so it too needs an installed build. The `{{@query_log_proxy}}`
+and `{{@db_service_name}}` computed blocks (`engine/QueryLogBlocks.kt`) put the proxy on the service's name and `main`
+port and move the database to `<service>-db` and `direct`. `dblog/postgres/` and `dblog/mysql/` follow each wire
+protocol (`PgSession`, `MySession`) and turn what passes into `QueryEntry`s; the proxy is the only writer of its log
+file, so `clear` empties it from inside the container.
+
+Its unit tests feed sessions hand-built protocol messages and run the proxies against scripted fake servers; they
+never start containers. The end-to-end test runs the proxies in front of real
+Postgres and MySQL and is opt-in like the gateway's:
+
+```bash
+GANTRY_E2E=1 ./gradlew test -PskipWeb --tests 'dev.gantry.dblog.QueryLogEndToEndTest'   # needs Docker
+```
+
+It makes a throwaway app (`dblog-e2e-<random>`) with its own gantry home under `build/dblog-e2e/` and free ports,
+connects through the proxies with JDBC over TLS and in plaintext (prepared statements, a cancelled query, `COPY`,
+`LISTEN`/`NOTIFY`, cursors, errors, a result past the row cap), checks the log through the reader, the CLI and the
+API, and removes the app, its containers, volumes and network when it finishes. It takes under a minute.
 
 ## Dashboard UI
 
