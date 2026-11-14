@@ -3,6 +3,7 @@ package dev.gantry.dblog.mysql
 import dev.gantry.dblog.QueryEntry
 import dev.gantry.dblog.QueryError
 import dev.gantry.dblog.postgres.Limits
+import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -156,6 +157,8 @@ internal object My {
 
     fun prepare(sql: String) = packet(0) { byte(0x16).string(sql) }
 
+    fun ping() = packet(0) { byte(0x0E) }
+
     fun fetch(
         id: Int,
         rows: Int,
@@ -251,6 +254,63 @@ class MySessionTest {
     private fun MySession.client(vararg packets: MyPacket) = packets.forEach(::fromClient)
 
     private fun MySession.server(vararg packets: MyPacket) = packets.forEach(::fromServer)
+
+    private val t0 = Instant.parse("2026-11-15T10:00:00Z")
+
+    private fun ms(n: Long) = t0.plusMillis(n)
+
+    private fun MySession.clientAt(
+        at: Instant,
+        vararg packets: MyPacket,
+    ) = packets.forEach { fromClient(it, at) }
+
+    private fun MySession.serverAt(
+        at: Instant,
+        vararg packets: MyPacket,
+    ) = packets.forEach { fromServer(it, at) }
+
+    @Test
+    fun `a pipelined execute is timed from when it was sent, not from the prepare's reply`() {
+        val s = session(caps = My.CLIENT or My.DEPRECATE_EOF)
+        s.clientAt(t0, My.prepare("select n from t"), My.execute(1, emptyList()))
+        s.serverAt(
+            ms(5),
+            My.prepareOk(id = 1, columns = 1, params = 0),
+            My.column("n", My.T_LONG),
+            My.columnCount(1),
+            My.column("n", My.T_LONG),
+            My.binaryRow(My.int4(7)),
+            My.ok(header = 0xFE),
+        )
+
+        val e = entries.single()
+        assertEquals(t0.toString(), e.time)
+        assertEquals(5.0, e.durationMs)
+    }
+
+    @Test
+    fun `pipelined queries - each starts when the statement before it completed, not a ping's reply`() {
+        val s = session(caps = My.CLIENT or My.DEPRECATE_EOF)
+        s.clientAt(t0, My.query("update t set a = 1"), My.ping(), My.query("update t set a = 2"))
+        s.serverAt(ms(5), My.ok(affected = 1))
+        s.serverAt(ms(6), My.ok())
+        s.serverAt(ms(8), My.ok(affected = 1))
+
+        assertEquals(listOf(t0.toString(), ms(5).toString()), entries.map { it.time })
+        assertEquals(listOf(5.0, 3.0), entries.map { it.durationMs })
+    }
+
+    @Test
+    fun `a query sent after the previous finished starts at its own send time`() {
+        val s = session(caps = My.CLIENT or My.DEPRECATE_EOF)
+        s.clientAt(t0, My.query("update t set a = 1"))
+        s.serverAt(ms(2), My.ok(affected = 1))
+        s.clientAt(ms(20), My.query("commit"))
+        s.serverAt(ms(27), My.ok())
+
+        assertEquals(listOf(t0.toString(), ms(20).toString()), entries.map { it.time })
+        assertEquals(listOf(2.0, 7.0), entries.map { it.durationMs })
+    }
 
     @Test
     fun `a text query logs columns and rows`() {

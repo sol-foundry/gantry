@@ -2,6 +2,7 @@ package dev.gantry.dblog.postgres
 
 import dev.gantry.dblog.QueryEntry
 import dev.gantry.dblog.QueryError
+import java.time.Instant
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -141,6 +142,85 @@ class PgSessionTest {
     private fun PgSession.client(vararg messages: PgMessage) = messages.forEach(::fromClient)
 
     private fun PgSession.server(vararg messages: PgMessage) = messages.forEach(::fromServer)
+
+    private val t0 = Instant.parse("2026-11-15T10:00:00Z")
+
+    private fun ms(n: Long) = t0.plusMillis(n)
+
+    private fun PgSession.clientAt(
+        at: Instant,
+        vararg messages: PgMessage,
+    ) = messages.forEach { fromClient(it, at) }
+
+    private fun PgSession.serverAt(
+        at: Instant,
+        vararg messages: PgMessage,
+    ) = messages.forEach { fromServer(it, at) }
+
+    private fun extended(sql: String) = arrayOf(Pg.parse("", sql), Pg.bind("", ""), Pg.describe('P', ""), Pg.execute(""))
+
+    private fun results(vararg rows: String) =
+        arrayOf(
+            Pg.parseComplete(),
+            Pg.bindComplete(),
+            Pg.rowDescription("n" to INT4),
+            *rows.map { Pg.dataRow(it) }.toTypedArray(),
+            Pg.commandComplete("SELECT ${rows.size}"),
+        )
+
+    @Test
+    fun `pipelined extended-protocol statement is timed from its Execute, not from the parse acks`() {
+        val s = session()
+        s.clientAt(t0, *extended("select n from t"), Pg.sync())
+        s.serverAt(ms(5), *results("1", "2", "3", "4", "5", "6"), Pg.ready())
+
+        val e = entries.single()
+        assertEquals(t0.toString(), e.time)
+        assertEquals(5.0, e.durationMs)
+    }
+
+    @Test
+    fun `two pipelined statements - the second starts when the first completed`() {
+        val s = session()
+        s.clientAt(t0, *extended("select 1"), *extended("select 2"), Pg.sync())
+        s.serverAt(ms(5), *results("1"))
+        s.serverAt(ms(8), *results("2"), Pg.ready())
+
+        assertEquals(listOf(t0.toString(), ms(5).toString()), entries.map { it.time })
+        assertEquals(listOf(5.0, 3.0), entries.map { it.durationMs })
+    }
+
+    @Test
+    fun `a statement sent after the previous finished starts at its own send time`() {
+        val s = session()
+        s.clientAt(t0, *extended("select 1"), Pg.sync())
+        s.serverAt(ms(2), *results("1"), Pg.ready('T'))
+        s.clientAt(ms(20), Pg.parse("", "commit"), Pg.bind("", ""), Pg.execute(""), Pg.sync())
+        s.serverAt(ms(27), Pg.parseComplete(), Pg.bindComplete(), Pg.commandComplete("COMMIT"), Pg.ready())
+
+        assertEquals(listOf(t0.toString(), ms(20).toString()), entries.map { it.time })
+        assertEquals(listOf(2.0, 7.0), entries.map { it.durationMs })
+    }
+
+    @Test
+    fun `each statement of a simple query is timed from the end of the one before`() {
+        val s = session()
+        s.clientAt(t0, Pg.query("select 1 as one; update t set a = 1"))
+        s.serverAt(ms(4), Pg.rowDescription("one" to INT4), Pg.dataRow("1"), Pg.commandComplete("SELECT 1"))
+        s.serverAt(ms(10), Pg.commandComplete("UPDATE 3"), Pg.ready())
+
+        assertEquals(listOf(t0.toString(), ms(4).toString()), entries.map { it.time })
+        assertEquals(listOf(4.0, 6.0), entries.map { it.durationMs })
+    }
+
+    @Test
+    fun `a simple query is timed from when it was sent`() {
+        val s = session()
+        s.clientAt(t0, Pg.query("commit"))
+        s.serverAt(ms(3), Pg.commandComplete("COMMIT"), Pg.ready())
+
+        assertEquals(3.0, entries.single().durationMs)
+    }
 
     @Test
     fun `a simple query with two statements logs two entries`() {

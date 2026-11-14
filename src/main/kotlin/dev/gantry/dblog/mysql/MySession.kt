@@ -114,6 +114,7 @@ class MySession(
     private enum class Stage { FIRST, COLUMNS, COLUMNS_EOF, ROWS }
 
     private sealed class Pending {
+        var sent: Instant? = null
         var start: Instant? = null
     }
 
@@ -217,25 +218,38 @@ class MySession(
     private var sendingData = false
     private var closed = false
 
+    /** When the last statement on this connection finished: the next one cannot have started before it. */
+    private var lastEnd: Instant? = null
+
     private val caps get() = serverCaps and clientCaps
     private val deprecateEof get() = caps and Caps.DEPRECATE_EOF != 0L
     private val queryAttributes get() = caps and Caps.QUERY_ATTRIBUTES != 0L
 
+    fun fromClient(packet: MyPacket) = fromClient(packet, Instant.now())
+
+    fun fromServer(packet: MyPacket) = fromServer(packet, Instant.now())
+
     @Synchronized
-    fun fromClient(packet: MyPacket) {
+    internal fun fromClient(
+        packet: MyPacket,
+        now: Instant,
+    ) {
         if (closed) return
         try {
-            onClient(packet, Instant.now())
+            onClient(packet, now)
         } catch (_: Exception) {
             // Malformed or unexpected input: skip the packet.
         }
     }
 
     @Synchronized
-    fun fromServer(packet: MyPacket) {
+    internal fun fromServer(
+        packet: MyPacket,
+        now: Instant,
+    ) {
         if (closed) return
         try {
-            onServer(packet, Instant.now())
+            onServer(packet, now)
         } catch (_: Exception) {
             // Malformed or unexpected input: skip the packet.
         }
@@ -684,13 +698,14 @@ class MySession(
         error: QueryError?,
         now: Instant,
     ) {
+        lastEnd = now
         if (client == GANTRY_CLIENT) return
         val command = keyword(run.sql)
         val entry =
             QueryEntry(
                 id = UUID.randomUUID().toString(),
                 time = run.start.toString(),
-                durationMs = Duration.between(run.start, now).toNanos() / 1_000_000.0,
+                durationMs = maxOf(0L, Duration.between(run.start, now).toNanos()) / 1_000_000.0,
                 service = service,
                 connectionId = connectionId,
                 client = client,
@@ -717,6 +732,7 @@ class MySession(
         item: Pending,
         now: Instant,
     ) {
+        item.sent = now
         queue.addLast(item)
         if (queue.size > MAX_PENDING) queue.removeFirst()
         if (queue.size == 1) onHead(now)
@@ -727,11 +743,13 @@ class MySession(
         onHead(now)
     }
 
+    // A command starts when it was sent or when the statement before it finished, whichever is later: a prepare's
+    // or a ping's reply ahead of it in a pipeline does not delay it.
     private fun onHead(now: Instant) {
         while (true) {
             val head = queue.firstOrNull() ?: return
             if (head !is Action) {
-                if (head.start == null) head.start = now
+                if (head.start == null) head.start = head.sent?.let { sent -> lastEnd?.let { maxOf(sent, it) } ?: sent } ?: now
                 return
             }
             queue.removeFirst()
