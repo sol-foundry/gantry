@@ -6,6 +6,7 @@ import type {
   DdlRequest,
   DdlResult,
   EnvResponse,
+  DbQuery,
   GatewayCall,
   GatewayConfig,
   GatewayConfigForm,
@@ -109,6 +110,8 @@ function dbApi(base: string) {
   const table = (schema: string, name: string) => qs({ schema, name });
   return {
     info: () => get<DatabaseInfo>(`${base}/info`),
+    queries: (filter: { search?: string; from?: string; to?: string; limit?: number }) => get<DbQuery[]>(`${base}/queries?${qs(filter)}`),
+    clearQueries: () => request<{ ok: boolean }>("DELETE", `${base}/queries`),
     table: (schema: string, name: string) => get<TableDetail>(`${base}/table?${table(schema, name)}`),
     rows: (schema: string, name: string, q: RowsQuery) => get<RowsPage>(`${base}/rows?${table(schema, name)}&${qs({ ...q })}`),
     insert: (schema: string, name: string, values: Record<string, string | null>) =>

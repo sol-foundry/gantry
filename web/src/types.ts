@@ -506,3 +506,28 @@ export interface GatewayConfigForm {
   config: GatewayConfig;
   comments: boolean;
 }
+
+export interface DbQueryError {
+  code: string;
+  message: string;
+}
+
+/** One statement a client ran through the query-log proxy. */
+export interface DbQuery {
+  id: string;
+  time: string;
+  durationMs: number;
+  service: string;
+  connectionId: number;
+  client: string | null;
+  sql: string;
+  params: (string | null)[];
+  columns: string[] | null;
+  rows: (string | null)[][] | null;
+  rowCount: number | null;
+  affected: number | null;
+  command: string | null;
+  error: DbQueryError | null;
+  /** Rows or a value were cut at the configured size. */
+  truncated: boolean;
+}
