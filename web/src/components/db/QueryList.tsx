@@ -194,12 +194,15 @@ export function QueryList({ app, service }: { app: string; service: SqlService }
           </Table>
         </div>
       )}
-      {selected && <QueryDetail query={selected} onClose={() => setSelected(undefined)} />}
+      {selected && <QueryDetail app={app} service={service} listed={selected} onClose={() => setSelected(undefined)} />}
     </div>
   );
 }
 
-function QueryDetail({ query: q, onClose }: { query: DbQuery; onClose: () => void }) {
+/** The listed entry shows at once; its result rows come from the full entry, which the list leaves out. */
+function QueryDetail({ app, service, listed, onClose }: { app: string; service: SqlService; listed: DbQuery; onClose: () => void }) {
+  const full = useLoad(() => api.db(app, service).query(listed.id), [app, service, listed.id]);
+  const q = full.data ?? listed;
   const o = outcome(q);
   const shown = q.rows?.length ?? 0;
   const result: TableResult | undefined = q.columns
@@ -257,6 +260,8 @@ function QueryDetail({ query: q, onClose }: { query: DbQuery; onClose: () => voi
           )}
         </section>
 
+        {full.error && <ErrorAlert title="Could not load the result rows" message={full.error} />}
+        {!full.data && !full.error && q.rowCount !== null && <Skeleton className="h-32" />}
         {result && (
           <section className="flex min-w-0 flex-col gap-2">
             <h3 className="font-heading text-sm font-medium">Results</h3>

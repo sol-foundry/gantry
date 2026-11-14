@@ -114,7 +114,7 @@ class MyProxyTest {
     private fun entries(proxy: MyProxy): List<QueryEntry> {
         proxy.stop()
         queue.close()
-        return QueryLog(logFile).recent().reversed()
+        return QueryLog(logFile).recent(withRows = true).reversed()
     }
 
     private val serverCaps = My.BASE or My.SSL or My.DEPRECATE_EOF

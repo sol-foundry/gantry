@@ -44,14 +44,14 @@ class LogQueueTest {
         queue.close()
         writer.close()
 
-        val byId = QueryLog(file).recent().associateBy { it.id }
-        val big = byId.getValue("big")
+        val log = QueryLog(file)
+        val big = log.get("big")!!
         assertNull(big.rows)
         assertNull(big.columns)
         assertEquals(10L, big.rowCount)
         assertEquals(listOf<String?>("p"), big.params)
         assertTrue(big.truncated)
-        val small = byId.getValue("small")
+        val small = log.get("small")!!
         assertEquals(listOf(listOf<String?>("y")), small.rows)
         assertFalse(small.truncated)
     }

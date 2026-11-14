@@ -180,6 +180,13 @@ class ServerTest {
                 w.append(queryEntry("a", "2026-11-14T10:00:00Z", "select * from users"))
                 w.append(queryEntry("b", "2026-11-14T10:01:00Z", "update orders set x = 1"))
                 w.append(queryEntry("c", "2026-11-14T10:02:00Z", "select * from users where id = 1"))
+                w.append(
+                    queryEntry(
+                        "d",
+                        "2026-11-14T09:00:00Z",
+                        "select 'rows'",
+                    ).copy(columns = listOf("v"), rows = listOf(listOf("cell")), rowCount = 1),
+                )
             }
             val base = "/api/apps/shop/db/postgres/queries"
 
@@ -192,6 +199,10 @@ class ServerTest {
             assertContains(window, "\"id\":\"b\"")
             assertFalse("\"id\":\"c\"" in window)
             assertEquals(HttpStatusCode.BadRequest, client.get("$base?from=soon").status)
+            assertEquals(HttpStatusCode.BadRequest, client.get("$base?from=99999999999999999999d").status)
+            assertFalse("cell" in all)
+            assertContains(all, "\"rowCount\":1")
+            assertContains(client.get("$base/d").bodyAsText(), "\"rows\":[[\"cell\"]]")
 
             assertContains(client.get("$base/a").bodyAsText(), "\"id\":\"a\"")
             assertEquals(HttpStatusCode.NotFound, client.get("$base/nope").status)

@@ -46,7 +46,8 @@ private const val INTERNAL_ERROR = -32603
 
 /**
  * A Model Context Protocol server over stdio for one app: newline-delimited JSON-RPC in, one JSON line per reply out.
- * It offers a single read-only tool returning the app's connection details; agents use their own tools from there.
+ * Its read-only tools return the app's connection details and, where the app has them, its gateway calls and database
+ * queries; agents use their own tools from there.
  * Only replies go to [output], so nothing else may write to stdout while it runs.
  */
 class McpServer(
@@ -155,9 +156,10 @@ class McpServer(
             put(
                 "description",
                 "The newest statements Gantry app '$app' ran against its databases (${databases.joinToString()}), newest first, " +
-                    "with SQL, parameters, duration, outcome or error and result rows, cut to $QUERY_ROWS rows and " +
-                    "$QUERY_VALUE_CHARS characters per value (truncated is then true). Filter with search (text in the SQL or " +
-                    "client, ignoring case) and since (how long ago, like 15m, 2h or 1d, or an ISO time).",
+                    "with SQL, parameters, duration and outcome (row count, rows affected or error), without result rows. " +
+                    "Pass id to get one statement with its result rows. Rows are cut to $QUERY_ROWS and parameters and " +
+                    "values to $QUERY_VALUE_CHARS characters (truncated is then true). Filter with search (text in the SQL " +
+                    "or client, ignoring case) and since (how long ago, like 15m, 2h or 1d, or an ISO time).",
             )
             putJsonObject("inputSchema") {
                 put("type", "object")
@@ -177,6 +179,10 @@ class McpServer(
                     putJsonObject("limit") {
                         put("type", "integer")
                         put("description", "How many statements to return (default $CALLS_DEFAULT, at most $CALLS_MAX).")
+                    }
+                    putJsonObject("id") {
+                        put("type", "string")
+                        put("description", "One statement's id from a listing: returns just it, with its result rows.")
                     }
                 }
             }
@@ -198,28 +204,33 @@ class McpServer(
                 }
             val limit = ((arguments?.get("limit") as? JsonPrimitive)?.intOrNull ?: CALLS_DEFAULT).coerceIn(1, CALLS_MAX)
             val since = arguments?.text("since")?.ifBlank { null }?.let { parseQueryTime(it) }
-            val entries = engine.queryLog(app, name).recent(limit, arguments?.text("search")?.ifBlank { null }, since).map { it.cutRows() }
+            val log = engine.queryLog(app, name)
+            val id = arguments?.text("id")?.ifBlank { null }
+            val entries =
+                if (id != null) {
+                    listOfNotNull(log.get(id))
+                } else {
+                    log.recent(limit, arguments?.text("search")?.ifBlank { null }, since)
+                }.map { it.cutForAgent() }
             buildJsonObject { put("content", buildJsonArray { add(textContent(Json.encodeToString(entries))) }) }
         } catch (e: GantryException) {
             toolError(e.message ?: "error")
         }
 
-    /** Rows and values are cut again for agents, so a few large results do not flood their context. */
-    private fun QueryEntry.cutRows(): QueryEntry {
-        val kept = rows?.take(QUERY_ROWS)
+    /** Rows, values and parameters are cut again for agents, so a few large statements do not flood their context. */
+    private fun QueryEntry.cutForAgent(): QueryEntry {
         var cut = rows != null && rows.size > QUERY_ROWS
-        val cells =
-            kept?.map { row ->
-                row.map { value ->
-                    if (value != null && value.length > QUERY_VALUE_CHARS) {
-                        cut = true
-                        value.take(QUERY_VALUE_CHARS)
-                    } else {
-                        value
-                    }
-                }
+
+        fun short(value: String?): String? =
+            if (value != null && value.length > QUERY_VALUE_CHARS) {
+                cut = true
+                value.take(QUERY_VALUE_CHARS)
+            } else {
+                value
             }
-        return copy(rows = cells, truncated = truncated || cut)
+        val cells = rows?.take(QUERY_ROWS)?.map { row -> row.map(::short) }
+        val shortParams = params.map(::short)
+        return copy(rows = cells, params = shortParams, truncated = truncated || cut)
     }
 
     private fun gatewayCallsDefinition() =

@@ -263,6 +263,7 @@ class McpServerTest {
         time: String,
         sql: String,
         rows: List<List<String?>>,
+        params: List<String?> = emptyList(),
     ) = QueryEntry(
         id = id,
         time = time,
@@ -271,7 +272,7 @@ class McpServerTest {
         connectionId = 1,
         client = null,
         sql = sql,
-        params = emptyList(),
+        params = params,
         columns = listOf("a"),
         rows = rows,
         rowCount = rows.size.toLong(),
@@ -282,11 +283,19 @@ class McpServerTest {
     )
 
     @Test
-    fun `get_db_queries returns entries with rows cut`() {
+    fun `get_db_queries lists entries without rows, and returns one by id with rows and values cut`() {
         val file = engine.appDir("shop").resolve("db-log").resolve("postgres.jsonl")
         QueryLogWriter(file, 10_000_000).use { w ->
             w.append(dbEntry("one", "2026-11-14T10:00:00Z", "select 1", listOf(listOf("x"))))
-            w.append(dbEntry("two", "2026-11-14T10:01:00Z", "select big", (1..50).map { listOf("v".repeat(500)) }))
+            w.append(
+                dbEntry(
+                    "two",
+                    "2026-11-14T10:01:00Z",
+                    "select big",
+                    (1..50).map { listOf("v".repeat(500)) },
+                    listOf("p".repeat(500), null),
+                ),
+            )
         }
 
         val tools = exchange("""{"jsonrpc":"2.0","id":3,"method":"tools/list"}""").single().at("result", "tools").jsonArray
@@ -306,17 +315,35 @@ class McpServerTest {
 
         val all = entries("""{"limit":5}""")
         assertEquals(listOf("two", "one"), all.map { it.at("id").jsonPrimitive.content })
-        assertEquals(20, all[0].at("rows").jsonArray.size)
+        assertTrue(all.all { it.jsonObject["rows"] == null || it.jsonObject["rows"] is JsonNull })
+        assertEquals("50", all[0].at("rowCount").jsonPrimitive.content)
         assertEquals(
             200,
             all[0]
+                .at("params")
+                .jsonArray[0]
+                .jsonPrimitive.content.length,
+        )
+
+        val one = entries("""{"id":"two"}""").single()
+        assertEquals(20, one.at("rows").jsonArray.size)
+        assertEquals(
+            200,
+            one
                 .at("rows")
                 .jsonArray[0]
                 .jsonArray[0]
                 .jsonPrimitive.content.length,
         )
-        assertEquals("true", all[0].at("truncated").jsonPrimitive.content)
-        assertEquals("false", all[1].at("truncated").jsonPrimitive.content)
+        assertEquals(
+            200,
+            one
+                .at("params")
+                .jsonArray[0]
+                .jsonPrimitive.content.length,
+        )
+        assertEquals("true", one.at("truncated").jsonPrimitive.content)
+        assertEquals(0, entries("""{"id":"missing"}""").size)
 
         assertEquals(listOf("one"), entries("""{"service":"postgres","search":"select 1"}""").map { it.at("id").jsonPrimitive.content })
         assertEquals(listOf("two"), entries("""{"since":"2026-11-14T10:01:00Z"}""").map { it.at("id").jsonPrimitive.content })

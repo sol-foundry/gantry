@@ -111,6 +111,7 @@ function dbApi(base: string) {
   return {
     info: () => get<DatabaseInfo>(`${base}/info`),
     queries: (filter: { search?: string; from?: string; to?: string; limit?: number }) => get<DbQuery[]>(`${base}/queries?${qs(filter)}`),
+    query: (id: string) => get<DbQuery>(`${base}/queries/${encodeURIComponent(id)}`),
     clearQueries: () => request<{ ok: boolean }>("DELETE", `${base}/queries`),
     table: (schema: string, name: string) => get<TableDetail>(`${base}/table?${table(schema, name)}`),
     rows: (schema: string, name: string, q: RowsQuery) => get<RowsPage>(`${base}/rows?${table(schema, name)}&${qs({ ...q })}`),

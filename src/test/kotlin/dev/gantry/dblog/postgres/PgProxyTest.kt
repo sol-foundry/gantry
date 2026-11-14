@@ -119,7 +119,7 @@ class PgProxyTest {
     private fun entries(proxy: PgProxy): List<QueryEntry> {
         proxy.stop()
         queue.close()
-        return QueryLog(logFile).recent().reversed()
+        return QueryLog(logFile).recent(withRows = true).reversed()
     }
 
     private val startup = bytes(Pg.startup("user" to "app", "database" to "shop", "application_name" to "psql"))

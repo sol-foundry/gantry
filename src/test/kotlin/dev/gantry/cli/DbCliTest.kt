@@ -112,4 +112,17 @@ class DbCliTest {
         assertTrue(engine.queryLog("shop", "postgres").recent().isEmpty())
         assertFailsWith<GantryException> { DbCommand(engine).test("clear shop mysql") }
     }
+
+    @Test
+    fun `following keeps every statement of a burst`() {
+        val file = engine.appDir("shop").resolve("db-log").resolve("postgres.jsonl")
+        QueryLogWriter(file, 100_000_000).use { w -> repeat(5) { w.append(entry("a$it", "2026-11-14T10:00:00Z", "select $it")) } }
+        val follower = QueryFollower(engine.queryLog("shop", "postgres"), null, null, null)
+        assertEquals(5, follower.poll().size)
+
+        QueryLogWriter(file, 100_000_000).use { w -> repeat(1500) { w.append(entry("b$it", "2026-11-14T10:00:01Z", "select $it")) } }
+        val burst = follower.poll()
+        assertEquals((0 until 1500).map { "b$it" }, burst.map { it.id })
+        assertEquals(emptyList(), follower.poll())
+    }
 }

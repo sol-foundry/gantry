@@ -27,6 +27,7 @@ import java.time.format.DateTimeParseException
 
 private const val DEFAULT_QUERIES = 20
 private const val FOLLOW_WINDOW = 200
+private const val FOLLOW_MAX = 10_000
 private const val FOLLOW_INTERVAL_MS = 1000L
 private const val SQL_WIDTH = 160
 private val queryClock = DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault())
@@ -112,19 +113,28 @@ private class DbClear(
     }
 }
 
-/** Polls a query log for statements it has not returned before, oldest first; statements are told apart by id. */
+/**
+ * Polls a query log for statements it has not returned before, oldest first. Each poll reads back to the newest line
+ * the previous one saw, so a burst is never cut to a window; at most [FOLLOW_MAX] come back per poll.
+ */
 internal class QueryFollower(
     private val log: QueryLog,
     private val search: String?,
     private val from: Instant?,
     private val to: Instant?,
 ) {
-    private var seen = emptySet<String>()
+    private var cursor: String? = null
+    private var started = false
+    private var returned = emptySet<String>()
 
     fun poll(): List<QueryEntry> {
-        val window = log.recent(FOLLOW_WINDOW, search, from, to)
-        val fresh = window.filter { it.id !in seen }.asReversed()
-        seen = window.map { it.id }.toSet()
+        val head = log.newestId()
+        val batch =
+            if (started) log.recent(FOLLOW_MAX, search, from, to, after = cursor) else log.recent(FOLLOW_WINDOW, search, from, to)
+        started = true
+        val fresh = batch.filter { it.id !in returned }.asReversed()
+        returned = batch.map { it.id }.toSet()
+        if (head != null) cursor = head
         return fresh
     }
 }

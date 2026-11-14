@@ -391,7 +391,7 @@ class QueryLogEndToEndTest {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
         var found = emptyList<QueryEntry>()
         while (System.nanoTime() < deadline) {
-            found = engine.queryLog(app, service).recent(5000).filter(match)
+            found = engine.queryLog(app, service).recent(5000, withRows = true).filter(match)
             if (found.size >= count) return found.take(count)
             Thread.sleep(200)
         }
