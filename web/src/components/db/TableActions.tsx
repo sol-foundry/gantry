@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { EraserIcon, MoreHorizontalIcon, PencilIcon, Trash2Icon } from "lucide-react";
-import { IconButton } from "@/components/common";
+import { StripButton } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -36,24 +36,24 @@ function useTableActions({ label, kind, base, onDdl }: Props) {
   };
 }
 
-/** Header buttons of the table view. */
+/** Header buttons of the table view, for its [IconStrip]. */
 export function TableActionButtons(props: Props) {
   const actions = useTableActions(props);
   return (
     <>
       {actions.isTable && (
         <>
-          <IconButton label="Rename" onClick={actions.rename}>
+          <StripButton label="Rename" onClick={actions.rename}>
             <PencilIcon />
-          </IconButton>
-          <IconButton label="Truncate" onClick={actions.truncate}>
+          </StripButton>
+          <StripButton label="Truncate" onClick={actions.truncate}>
             <EraserIcon />
-          </IconButton>
+          </StripButton>
         </>
       )}
-      <IconButton label="Drop" variant="destructive" onClick={actions.drop}>
+      <StripButton label="Drop" destructive onClick={actions.drop}>
         <Trash2Icon />
-      </IconButton>
+      </StripButton>
       {actions.dialog}
     </>
   );

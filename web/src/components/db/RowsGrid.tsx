@@ -1,13 +1,13 @@
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import {
   ArrowDownIcon,
   ArrowUpDownIcon,
   ArrowUpIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
-  FilterIcon,
   KeyRoundIcon,
   LockIcon,
+  PencilIcon,
   PlusIcon,
   RefreshCwIcon,
   Trash2Icon,
@@ -22,13 +22,19 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import { Kbd } from "@/components/ui/kbd";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useAction, useLoad } from "@/hooks";
 import { cn } from "@/lib/utils";
-import type { SqlService, TableDetail } from "@/types";
-import { InsertRowModal } from "./InsertRowModal";
+import type { ColumnInfo, SqlService, TableDetail } from "@/types";
+import { RowModal, type RowEdit } from "./RowModal";
+import { BooleanSelect, inputAttrs, valueKind } from "./ValueInput";
+import { WhereInput } from "./WhereInput";
 
 const PAGE_SIZE = 100;
+
+/** The table's title and the rows toolbar: fixed above the rows, which scroll on their own below it. */
+export const PANE_HEADER = "flex shrink-0 flex-col gap-3 border-b bg-muted/40 px-4 py-3 md:px-6";
 
 interface Editing {
   row: number;
@@ -36,19 +42,22 @@ interface Editing {
   value: string;
 }
 
-/** The Data tab: paged, sortable, filterable rows; rows are editable when the table has a primary key. */
+/** A table's rows: paged, sortable, filterable rows; rows are editable when the table has a primary key. */
 export function RowsGrid({
   app,
   service,
   table,
   refreshKey,
   onChanged,
+  heading,
 }: {
   app: string;
   service: SqlService;
   table: TableDetail;
   refreshKey: number;
   onChanged: () => void;
+  /** Shown above the toolbar, pinned with it. */
+  heading?: ReactNode;
 }) {
   const db = api.db(app, service);
   const [page, setPage] = useState(0);
@@ -62,7 +71,8 @@ export function RowsGrid({
   );
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [editing, setEditing] = useState<Editing>();
-  const [inserting, setInserting] = useState(false);
+  // The row dialog: inserting a new row, or editing one on this page.
+  const [rowDialog, setRowDialog] = useState<"insert" | RowEdit>();
   const { busy, error, run, clearError } = useAction();
 
   // Selection and edits are row indexes into the current page, so they don't survive a different page.
@@ -138,78 +148,87 @@ export function RowsGrid({
   const count = pageRows.length;
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <InputGroup className="min-w-64 flex-1">
-          <InputGroupAddon>
-            <FilterIcon />
-            <span className="font-mono text-xs">WHERE</span>
-          </InputGroupAddon>
-          <InputGroupInput
-            className="font-mono text-xs md:text-xs"
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className={PANE_HEADER}>
+        {heading}
+        <div className="flex flex-wrap items-center gap-2">
+          <WhereInput
+            service={service}
+            columns={table.columns}
+            values={(name) => {
+              const index = columns.indexOf(name);
+              return index < 0 ? [] : pageRows.map((row) => row[index] ?? null);
+            }}
             value={filter}
-            placeholder="price > 10 AND name LIKE 'A%'"
-            spellCheck={false}
-            onChange={(e) => setFilter(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && applyFilter()}
+            onChange={setFilter}
+            onSubmit={applyFilter}
+            trailing={
+              where ? (
+                <InputGroupButton size="icon-xs" onClick={clearFilter} aria-label="Clear filter" title="Clear filter">
+                  <XIcon />
+                </InputGroupButton>
+              ) : (
+                <Kbd>↵</Kbd>
+              )
+            }
           />
-          <InputGroupAddon align="inline-end">
-            {where ? (
-              <InputGroupButton size="icon-xs" onClick={clearFilter} aria-label="Clear filter" title="Clear filter">
-                <XIcon />
-              </InputGroupButton>
-            ) : (
-              <Kbd>↵</Kbd>
-            )}
-          </InputGroupAddon>
-        </InputGroup>
-        <Button variant="outline" size="sm" onClick={refresh}>
-          <RefreshCwIcon />
-          Refresh
-        </Button>
-        {editable && (
-          <>
-            <Button variant="outline" size="sm" onClick={() => setInserting(true)}>
-              <PlusIcon />
-              Insert row
-            </Button>
-            <ConfirmButton
-              destructive
-              size="sm"
-              disabled={selected.size === 0 || !!busy}
-              title={`Delete ${selected.size} row${selected.size === 1 ? "" : "s"}?`}
-              description={`This deletes the selected rows from ${table.name} by primary key. It can't be undone.`}
-              confirmLabel="Delete"
-              onConfirm={deleteSelected}
-            >
-              <Trash2Icon />
-              Delete{selected.size > 0 ? ` (${selected.size})` : ""}
-            </ConfirmButton>
-          </>
-        )}
+          <Button variant="outline" size="sm" onClick={refresh}>
+            <RefreshCwIcon />
+            Refresh
+          </Button>
+          {editable && (
+            <>
+              <Button variant="outline" size="sm" onClick={() => setRowDialog("insert")}>
+                <PlusIcon />
+                Insert row
+              </Button>
+              <ConfirmButton
+                destructive
+                size="sm"
+                disabled={selected.size === 0 || !!busy}
+                title={`Delete ${selected.size} row${selected.size === 1 ? "" : "s"}?`}
+                description={`This deletes the selected rows from ${table.name} by primary key. It can't be undone.`}
+                confirmLabel="Delete"
+                onConfirm={deleteSelected}
+              >
+                <Trash2Icon />
+                Delete{selected.size > 0 ? ` (${selected.size})` : ""}
+              </ConfirmButton>
+            </>
+          )}
+          {data && !editable && (
+            <Tooltip>
+              <TooltipTrigger render={<span className="inline-flex items-center gap-1 text-xs text-muted-foreground" />}>
+                <LockIcon className="size-3" />
+                Read-only
+              </TooltipTrigger>
+              <TooltipContent>
+                {table.kind !== "table" ? `This ${table.kind} is read-only.` : "The table has no primary key. Use SQL to change rows."}
+              </TooltipContent>
+            </Tooltip>
+          )}
+        </div>
       </div>
-      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        {editable ? (
-          <>
-            Double-click a cell to edit. <Kbd>↵</Kbd> saves, <Kbd>Esc</Kbd> cancels.
-          </>
-        ) : (
-          <>
-            <LockIcon className="size-3" />
-            {table.kind !== "table" ? `This ${table.kind} is read-only.` : "Read-only: the table has no primary key. Use SQL to change rows."}
-          </>
-        )}
-      </p>
-      <ErrorAlert message={rows.error} />
-      <ErrorAlert message={error} onDismiss={clearError} />
-      {!data && !rows.error && <Skeleton className="h-48 w-full" />}
+      {(rows.error || error) && (
+        <div className="flex shrink-0 flex-col gap-3 px-4 pt-3 md:px-6">
+          <ErrorAlert message={rows.error} />
+          <ErrorAlert message={error} onDismiss={clearError} />
+        </div>
+      )}
+      {!data && !rows.error && (
+        <div className="p-4 md:p-6">
+          <Skeleton className="h-48 w-full" />
+        </div>
+      )}
       {data && (
-        <GridContainer>
+        <GridContainer fill>
           <TableHeader>
             <TableRow>
               {editable && (
-                <TableHead className="w-8">
-                  <Checkbox checked={allSelected} onCheckedChange={toggleAll} aria-label="Select all rows on this page" />
+                <TableHead className="w-14 pl-0! md:pl-0!">
+                  {/* No left padding: the edit button's own padding sets the row's edge (! beats the grid's edge padding). */}
+                  {/* Lined up with the row checkboxes, which follow each row's edit button. */}
+                  <Checkbox className="ml-7.5" checked={allSelected} onCheckedChange={toggleAll} aria-label="Select all rows on this page" />
                 </TableHead>
               )}
               {columns.map((c) => (
@@ -240,16 +259,37 @@ export function RowsGrid({
               </TableRow>
             )}
             {pageRows.map((row, r) => (
-              <TableRow key={r} data-state={selected.has(r) ? "selected" : undefined}>
+              <TableRow key={r} className="group/row" data-state={selected.has(r) ? "selected" : undefined}>
                 {editable && (
-                  <TableCell className="w-8">
-                    <Checkbox checked={selected.has(r)} onCheckedChange={() => toggle(r)} aria-label={`Select row ${first + r + 1}`} />
+                  <TableCell className="w-14 pl-0! md:pl-0!">
+                    <div className="flex items-center gap-1.5">
+                      {/* Shown on the hovered (or focused) row: the whole row in the insert dialog, filled in for an update. */}
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        className="text-muted-foreground opacity-0 group-hover/row:opacity-100 hover:text-foreground focus-visible:opacity-100"
+                        aria-label={`Edit row ${first + r + 1}`}
+                        title="Edit row"
+                        onClick={() =>
+                          setRowDialog({
+                            key: keyOf(r),
+                            values: Object.fromEntries(columns.map((name, c) => [name, row[c] ?? null])),
+                            clipped: new Set(columns.filter((_, c) => clipped.has(`${r}:${c}`))),
+                          })
+                        }
+                      >
+                        <PencilIcon />
+                      </Button>
+                      <Checkbox checked={selected.has(r)} onCheckedChange={() => toggle(r)} aria-label={`Select row ${first + r + 1}`} />
+                    </div>
                   </TableCell>
                 )}
                 {row.map((cell, c) =>
                   editing?.row === r && editing.column === c ? (
                     <TableCell key={c} className="px-1 py-0.5">
                       <CellEditor
+                        service={service}
+                        column={table.columns.find((col) => col.name === columns[editing.column])}
                         value={editing.value}
                         busy={!!busy}
                         onChange={(value) => setEditing({ ...editing, value })}
@@ -273,7 +313,7 @@ export function RowsGrid({
           </TableBody>
         </GridContainer>
       )}
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-t px-4 py-2 md:px-6">
         <span className="text-xs text-muted-foreground tabular-nums">
           {count === 0 ? "No rows" : `Rows ${first + 1}–${first + count}`}
           {data?.total != null && ` of ${data.total}`}
@@ -288,14 +328,15 @@ export function RowsGrid({
           </Button>
         </div>
       </div>
-      {inserting && (
-        <InsertRowModal
+      {rowDialog && (
+        <RowModal
           app={app}
           service={service}
           table={table}
-          onClose={() => setInserting(false)}
-          onInserted={() => {
-            setInserting(false);
+          edit={rowDialog === "insert" ? undefined : rowDialog}
+          onClose={() => setRowDialog(undefined)}
+          onSaved={() => {
+            setRowDialog(undefined);
             changed();
           }}
         />
@@ -304,19 +345,43 @@ export function RowsGrid({
   );
 }
 
+/** A cell being edited in place, typed by its column: a select that saves on choosing for booleans, else an input. */
 function CellEditor({
+  service,
+  column,
   value,
   busy,
   onChange,
   onSave,
   onCancel,
 }: {
+  service: SqlService;
+  column: ColumnInfo | undefined;
   value: string;
   busy: boolean;
   onChange: (value: string) => void;
   onSave: (value: string | null) => void;
   onCancel: () => void;
 }) {
+  const kind = column ? valueKind(column.type) : "text";
+  const actions = (
+    <>
+      <InputGroupButton size="xs" className="font-mono text-xs" disabled={busy} onClick={() => onSave(null)} title="Set to NULL">
+        NULL
+      </InputGroupButton>
+      <InputGroupButton size="icon-xs" disabled={busy} onClick={onCancel} aria-label="Cancel edit">
+        <XIcon />
+      </InputGroupButton>
+    </>
+  );
+  if (kind === "boolean") {
+    return (
+      <div className="flex min-w-48 items-center gap-1">
+        <BooleanSelect service={service} value={value} onChange={onSave} disabled={busy} defaultOpen className="h-7 flex-1" />
+        {actions}
+      </div>
+    );
+  }
   return (
     <InputGroup className="h-7 min-w-48">
       <InputGroupInput
@@ -324,20 +389,14 @@ function CellEditor({
         className="h-full font-mono text-xs md:text-xs"
         value={value}
         disabled={busy}
+        {...inputAttrs(kind, value)}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") onSave(value);
           if (e.key === "Escape") onCancel();
         }}
       />
-      <InputGroupAddon align="inline-end">
-        <InputGroupButton size="xs" className="font-mono text-xs" disabled={busy} onClick={() => onSave(null)} title="Set to NULL">
-          NULL
-        </InputGroupButton>
-        <InputGroupButton size="icon-xs" disabled={busy} onClick={onCancel} aria-label="Cancel edit">
-          <XIcon />
-        </InputGroupButton>
-      </InputGroupAddon>
+      <InputGroupAddon align="inline-end">{actions}</InputGroupAddon>
     </InputGroup>
   );
 }

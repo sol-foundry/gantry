@@ -1,22 +1,21 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { DownloadCloudIcon, Table2Icon } from "lucide-react";
+import { Columns3Icon, DownloadCloudIcon, KeyRoundIcon, Table2Icon } from "lucide-react";
 import { api } from "@/api";
-import { ErrorAlert, IconButton } from "@/components/common";
+import { ErrorAlert, IconStrip, StripButton } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useLoad } from "@/hooks";
 import type { SourceInfo, SqlService } from "@/types";
 import { plural, qualifiedName, type RequestDdl, type TableRef } from "./format";
 import { IndexesTab } from "./IndexesTab";
-import { RowsGrid } from "./RowsGrid";
+import { PANE_HEADER, RowsGrid } from "./RowsGrid";
 import { StructureTab } from "./StructureTab";
 import { TableActionButtons } from "./TableActions";
 
-/** One table: header with table-level actions, then Data / Structure / Indexes. */
 const SYNC_POLL_MS = 1000;
 
 /** Why the table can't be synced in one click yet, or undefined when its source and password are saved. */
@@ -34,6 +33,7 @@ function missingSource(info: SourceInfo | undefined): string | undefined {
   return `Set up the source first (missing ${absent.join(", ")}): use Sync from source at the top of the database page.`;
 }
 
+/** One table: a pinned header with table-level actions over its rows; Structure and Indexes open in dialogs. */
 export function TableView({
   app,
   service,
@@ -94,65 +94,86 @@ export function TableView({
   const label = qualifiedName(hasSchemas, table.schema, table.name);
   const data = detail.data;
 
-  return (
-    <Card className="min-w-0">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 font-mono text-base">
-          <Table2Icon className="size-4 text-muted-foreground" />
-          {label}
-          {data && data.kind !== "table" && <Badge variant="outline">{data.kind}</Badge>}
-        </CardTitle>
-        <CardDescription>
-          {data ? (
+  // Structure and Indexes open over the rows. A schema change closes them, so its review dialog isn't stacked on top.
+  const [panel, setPanel] = useState<"structure" | "indexes">();
+  const ddlFromPanel: RequestDdl = (...args) => {
+    setPanel(undefined);
+    onDdl(...args);
+  };
+
+  const heading = (
+    <div className="flex items-center gap-3">
+      <h2 className="flex min-w-0 flex-1 items-center gap-2 font-mono text-base font-medium">
+        <Table2Icon className="size-4 shrink-0 text-muted-foreground" />
+        <span className="truncate">{label}</span>
+        {data && data.kind !== "table" && <Badge variant="outline">{data.kind}</Badge>}
+      </h2>
+      {!data && <Skeleton className="h-4 w-24" />}
+      {data && (
+        // The same strip as the page's top-bar group: the row count, what the table is, then what can be done to it.
+        <IconStrip className="shrink-0">
+          {data.rowCount != null && (
             <>
-              {data.rowCount != null ? plural(data.rowCount, "row") : "row count unavailable"} · {plural(data.columns.length, "column")} ·{" "}
-              {plural(data.indexes.length, "index")}
+              <span className="px-2 text-xs text-foreground/60 tabular-nums dark:text-muted-foreground">{plural(data.rowCount, "row")}</span>
+              <Separator orientation="vertical" className="mx-0.5 data-vertical:h-4 data-vertical:self-center" />
             </>
-          ) : (
-            <Skeleton className="h-4 w-40" />
           )}
-        </CardDescription>
-        {data && (
-          <CardAction className="flex flex-wrap gap-2">
-            {data.kind === "table" && (
-              <IconButton label={syncing ? `Syncing ${label}…` : "Sync from source"} tooltip={missing} disabled={syncing || !!missing} onClick={syncTable}>
-                {syncing ? <Spinner /> : <DownloadCloudIcon />}
-              </IconButton>
-            )}
-            <TableActionButtons label={label} kind={data.kind} base={{ schema: table.schema, table: table.name }} onDdl={onDdl} />
-          </CardAction>
-        )}
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <ErrorAlert message={detail.error} />
-        {data && (
-          <Tabs defaultValue="data">
-            <TabsList variant="line">
-              <TabsTrigger value="data">Data</TabsTrigger>
-              <TabsTrigger value="structure">Structure</TabsTrigger>
-              <TabsTrigger value="indexes">Indexes &amp; constraints</TabsTrigger>
-            </TabsList>
-            <TabsContent value="data" className="flex flex-col pt-2">
-              <RowsGrid
-                app={app}
-                service={service}
-                table={data}
-                refreshKey={refreshKey + synced}
-                onChanged={() => {
-                  setRowsChanged((n) => n + 1);
-                  onChanged();
-                }}
-              />
-            </TabsContent>
-            <TabsContent value="structure" className="pt-2">
-              <StructureTab service={service} table={data} onDdl={onDdl} />
-            </TabsContent>
-            <TabsContent value="indexes" className="pt-2">
-              <IndexesTab table={data} onDdl={onDdl} />
-            </TabsContent>
-          </Tabs>
-        )}
-      </CardContent>
-    </Card>
+          <StripButton label={`Structure: ${plural(data.columns.length, "column")}`} onClick={() => setPanel("structure")}>
+            <Columns3Icon />
+          </StripButton>
+          <StripButton label={`Indexes & constraints: ${plural(data.indexes.length, "index")}`} onClick={() => setPanel("indexes")}>
+            <KeyRoundIcon />
+          </StripButton>
+          <Separator orientation="vertical" className="mx-0.5 data-vertical:h-4 data-vertical:self-center" />
+          {data.kind === "table" && (
+            <StripButton label={syncing ? `Syncing ${label}…` : "Sync from source"} tooltip={missing} disabled={syncing || !!missing} onClick={syncTable}>
+              {syncing ? <Spinner /> : <DownloadCloudIcon />}
+            </StripButton>
+          )}
+          <TableActionButtons label={label} kind={data.kind} base={{ schema: table.schema, table: table.name }} onDdl={onDdl} />
+        </IconStrip>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {data ? (
+        <RowsGrid
+          app={app}
+          service={service}
+          table={data}
+          refreshKey={refreshKey + synced}
+          heading={heading}
+          onChanged={() => {
+            setRowsChanged((n) => n + 1);
+            onChanged();
+          }}
+        />
+      ) : (
+        <div className={PANE_HEADER}>{heading}</div>
+      )}
+      {detail.error && (
+        <div className="p-4 md:p-6">
+          <ErrorAlert message={detail.error} />
+        </div>
+      )}
+      {data && (
+        <Dialog open={!!panel} onOpenChange={(open) => !open && setPanel(undefined)}>
+          <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-5xl">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                {panel === "structure" ? "Structure" : "Indexes & constraints"}
+                <span className="font-mono text-sm font-normal text-muted-foreground">{label}</span>
+              </DialogTitle>
+            </DialogHeader>
+            <div className="-mx-1 min-h-0 overflow-y-auto px-1">
+              {panel === "structure" && <StructureTab service={service} table={data} onDdl={ddlFromPanel} />}
+              {panel === "indexes" && <IndexesTab table={data} onDdl={ddlFromPanel} />}
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+    </div>
   );
 }

@@ -185,3 +185,58 @@ export function IconButton({
     </Tooltip>
   );
 }
+
+/**
+ * A button in an [IconStrip], styled like the strip's tabs: a square as tall as the strip's inside, so the strip's
+ * padding sets its size, with icons in a light grey that darkens on hover.
+ */
+export const STRIP_BUTTON =
+  "aspect-square h-full w-auto text-foreground/60 hover:text-foreground dark:text-muted-foreground dark:hover:text-foreground";
+
+/** A grey strip of icon controls, as in the database page's top bar: tabs, sync, list actions. */
+export function IconStrip({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn("flex h-8 items-center gap-0.5 rounded-lg bg-muted p-[3px]", className)}>{children}</div>;
+}
+
+/** An icon button sized for an [IconStrip], named by its tooltip and aria-label. */
+export function StripButton({
+  label,
+  tooltip,
+  onClick,
+  disabled,
+  destructive = false,
+  children,
+}: {
+  label: string;
+  /** Shown instead of [label], e.g. why the button is disabled. */
+  tooltip?: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  /** Marks the icon red, e.g. Drop. */
+  destructive?: boolean;
+  children: ReactNode;
+}) {
+  const button = (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      className={cn(STRIP_BUTTON, destructive && "text-destructive/80 hover:text-destructive dark:text-destructive/80")}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      {children}
+    </Button>
+  );
+  return (
+    <Tooltip>
+      {disabled ? (
+        // A disabled button takes no pointer events, so its tooltip hangs on a wrapper as tall as the strip's inside.
+        <TooltipTrigger render={<span className="inline-flex h-full" />}>{button}</TooltipTrigger>
+      ) : (
+        <TooltipTrigger render={button} />
+      )}
+      <TooltipContent>{tooltip ?? label}</TooltipContent>
+    </Tooltip>
+  );
+}
