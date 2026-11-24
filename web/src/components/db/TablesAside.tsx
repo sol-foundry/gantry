@@ -1,9 +1,9 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ChevronRightIcon, LayoutGridIcon, PlusIcon, RefreshCwIcon, SearchIcon, Table2Icon } from "lucide-react";
+import { IconStrip, StripButton } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
@@ -14,10 +14,14 @@ export type { TableRef } from "./format";
 
 type Kind = "" | "table" | "view";
 
+/** The open entry: a solid pill that stands out from hover, with its muted details lightened to stay readable. */
+const ACTIVE =
+  "bg-primary font-medium text-primary-foreground hover:bg-primary/90 [&_.text-muted-foreground]:text-primary-foreground/70 [&_[data-slot=badge]]:border-primary-foreground/30 [&_[data-slot=badge]]:text-primary-foreground";
+
 const KINDS: { value: Kind; label: string }[] = [
   { value: "", label: "All" },
   { value: "table", label: "Tables" },
-  { value: "view", label: "Views" },
+  { value: "view", label: "Views only" },
 ];
 
 /**
@@ -82,13 +86,20 @@ export function TablesAside({
   };
 
   return (
-    <Card size="sm">
-      <CardContent className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3 px-3 pb-3">
+      {/* Title and search stay put while the list scrolls under them. */}
+      <div className="sticky top-0 z-10 -mx-3 flex flex-col gap-3 bg-background px-3 pt-3 pb-1">
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium">Tables</span>
-          <Button variant="ghost" size="icon-xs" onClick={onRefresh} aria-label="Refresh tables" title="Refresh">
-            <RefreshCwIcon />
-          </Button>
+          <IconStrip className="p-[5px]">
+            <StripButton label="Refresh tables" onClick={onRefresh}>
+              <RefreshCwIcon />
+            </StripButton>
+            <Separator orientation="vertical" className="mx-0.5 data-vertical:h-4 data-vertical:self-center" />
+            <StripButton label="New table" onClick={onNewTable}>
+              <PlusIcon />
+            </StripButton>
+          </IconStrip>
         </div>
         <InputGroup>
           <InputGroupAddon>
@@ -96,58 +107,54 @@ export function TablesAside({
           </InputGroupAddon>
           <InputGroupInput value={filter} placeholder="Filter tables" onChange={(e) => setFilter(e.target.value)} />
         </InputGroup>
-        <ToggleGroup
-          variant="outline"
-          size="sm"
-          spacing={0}
-          className="w-full"
-          value={[kind]}
-          onValueChange={(next) => setKind((next[0] ?? "") as Kind)}
-          aria-label="Kind"
-        >
-          {KINDS.map((k) => (
-            <ToggleGroupItem key={k.value || "all"} value={k.value} className="flex-1">
-              {k.label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-        <Button variant="outline" size="sm" onClick={onNewTable}>
-          <PlusIcon />
-          New table
-        </Button>
-        <button
-          className={cn(
-            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted",
-            overview && "bg-muted font-medium",
-          )}
-          onClick={onOverview}
-        >
-          <LayoutGridIcon className="size-3.5 text-muted-foreground" />
-          Overview
-          {info && <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">{info.tables.length}</span>}
-        </button>
-        <div className="-mx-1 flex flex-col gap-3 px-1">
-          {!info && [0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-7 w-full" />)}
-          {info && tables.length === 0 && (
-            <p className="px-2 text-xs text-muted-foreground">{filter || kind ? "No match." : "No tables yet."}</p>
-          )}
-          {groups.filter((schema) => !mirrors.has(schema)).map(group)}
-          {mirrorGroups.length > 0 && (
-            <div className="flex flex-col gap-3 border-t pt-3">
-              <FoldHeader
-                open={mirrorsShown}
-                count={mirrorGroups.length}
-                title="Schemas of nothing but views over same-named tables in other schemas, such as a read-only access layer"
-                onToggle={() => setMirrorsOpen(!mirrorsShown)}
-              >
-                Mirror schemas
-              </FoldHeader>
-              {mirrorsShown && <div className="flex flex-col gap-3 pl-2">{mirrorGroups.map(group)}</div>}
-            </div>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+      </div>
+      <ToggleGroup
+        variant="outline"
+        size="sm"
+        spacing={0}
+        className="w-full"
+        value={[kind]}
+        onValueChange={(next) => setKind((next[0] ?? "") as Kind)}
+        aria-label="Kind"
+      >
+        {KINDS.map((k) => (
+          <ToggleGroupItem key={k.value || "all"} value={k.value} className="flex-1">
+            {k.label}
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
+      <button
+        className={cn(
+          "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted",
+          overview && ACTIVE,
+        )}
+        onClick={onOverview}
+      >
+        <LayoutGridIcon className="size-3.5 text-muted-foreground" />
+        Overview
+        {info && <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">{info.tables.length}</span>}
+      </button>
+      <div className="-mx-1 flex flex-col gap-3 px-1">
+        {!info && [0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-7 w-full" />)}
+        {info && tables.length === 0 && (
+          <p className="px-2 text-xs text-muted-foreground">{filter || kind ? "No match." : "No tables yet."}</p>
+        )}
+        {groups.filter((schema) => !mirrors.has(schema)).map(group)}
+        {mirrorGroups.length > 0 && (
+          <div className="flex flex-col gap-3 border-t pt-3">
+            <FoldHeader
+              open={mirrorsShown}
+              count={mirrorGroups.length}
+              title="Schemas of nothing but views over same-named tables in other schemas, such as a read-only access layer"
+              onToggle={() => setMirrorsOpen(!mirrorsShown)}
+            >
+              Mirror schemas
+            </FoldHeader>
+            {mirrorsShown && <div className="flex flex-col gap-3 pl-2">{mirrorGroups.map(group)}</div>}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -179,11 +186,19 @@ function FoldHeader({
 }
 
 function TableItem({ table, active, onSelect }: { table: TableSummary; active: boolean; onSelect: (table: TableRef) => void }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  // Bring the open table into view when it becomes active: opened from a link, the overview, or a reload.
+  useEffect(() => {
+    if (active) ref.current?.scrollIntoView({ block: "nearest" });
+  }, [active]);
   return (
     <button
+      ref={ref}
+      aria-current={active || undefined}
       className={cn(
-        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted",
-        active && "bg-muted font-medium",
+        // The scroll margin keeps a table scrolled into view clear of the pinned title and search.
+        "flex w-full scroll-mt-24 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted",
+        active && ACTIVE,
       )}
       onClick={() => onSelect({ schema: table.schema, name: table.name })}
     >

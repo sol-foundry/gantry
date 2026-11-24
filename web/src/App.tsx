@@ -79,7 +79,7 @@ function Page({ route }: { route: Route }) {
     case "tool":
       if (route.tool === "queue") return <QueuePage key={route.app} app={route.app} />;
       if (route.tool === "gateway") return <GatewayPage key={route.app} app={route.app} />;
-      return <DatabasePage key={`${route.app}/${route.tool}`} app={route.app} service={route.tool} />;
+      return <DatabasePage key={`${route.app}/${route.tool}`} app={route.app} service={route.tool} table={route.table} />;
     case "services":
       return <ServicesPage />;
     case "service":

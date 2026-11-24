@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "check:gateway-form": "node scripts/gateway-form.check.ts"
+    "check:gateway-form": "node scripts/gateway-form.check.ts",
+    "check:where-suggest": "node scripts/where-suggest.check.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

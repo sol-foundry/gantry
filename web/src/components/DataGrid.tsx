@@ -4,8 +4,29 @@ import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/compon
 import { cn } from "@/lib/utils";
 import type { TableResult } from "@/types";
 
-/** A bordered result grid at its full height; wide grids scroll sideways with the app's overlay scrollbar. */
-export function GridContainer({ children, className }: { children: ReactNode; className?: string }) {
+/**
+ * A bordered result grid at its full height; wide grids scroll sideways with the app's overlay scrollbar.
+ * With [fill] it is borderless and takes the height it is given instead, scrolling both ways under a pinned header row.
+ */
+export function GridContainer({ children, className, fill = false }: { children: ReactNode; className?: string; fill?: boolean }) {
+  if (fill) {
+    return (
+      <ScrollArea orientation="both" className={cn("min-h-0 flex-1", className)}>
+        <table
+          className={cn(
+            "w-full caption-bottom text-sm",
+            // The header row stays put; a shadow stands in for its border, which wouldn't move with a sticky cell.
+            "[&_th]:sticky [&_th]:top-0 [&_th]:z-10 [&_th]:bg-muted [&_th]:shadow-[inset_0_-1px_0_var(--border)]",
+            // The outer columns line up with the pane's padding above and below the grid.
+            "[&_td:first-child]:pl-4 [&_td:last-child]:pr-4 [&_th:first-child]:pl-4 [&_th:last-child]:pr-4",
+            "md:[&_td:first-child]:pl-6 md:[&_td:last-child]:pr-6 md:[&_th:first-child]:pl-6 md:[&_th:last-child]:pr-6",
+          )}
+        >
+          {children}
+        </table>
+      </ScrollArea>
+    );
+  }
   return (
     <ScrollArea orientation="horizontal" className={cn("rounded-lg border", className)}>
       <table className="w-full caption-bottom text-sm [&_th]:bg-muted">{children}</table>
